@@ -1,0 +1,18 @@
+{
+  "name": "telegram-codex-bot",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Minimal Telegram bot that lets you chat with the Codex CLI on your own machine. Bring your own bot token, run locally.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "telegram-codex-bot": "./bot.mjs"
+  },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "start": "node bot.mjs"
+  },
+  "license": "MIT"
+}
