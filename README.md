@@ -1,4 +1,8 @@
-# telegram-codex-bot
+<p align="center">
+  <img src="morse.png" alt="morse" width="140">
+</p>
+
+# morse
 
 A tiny bridge between Telegram and the [Codex CLI](https://github.com/openai/codex). You bring your own bot. You run it on your own machine. Nothing is hosted.
 
@@ -7,8 +11,8 @@ Two files, zero npm dependencies. After a one-time setup you never touch the ter
 ## Get going
 
 ```bash
-git clone <this-repo> telegram-codex-bot
-cd telegram-codex-bot
+git clone https://github.com/ehsuun/morse.git
+cd morse
 npm install   # no-op (no deps), but won't hurt
 npm start
 ```
@@ -73,7 +77,7 @@ Or edit `.env` directly. Keys: `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, `CODEX_
 ## Layout
 
 ```
-telegram-codex-bot/
+morse/
 ├── bot.mjs        # runtime — Telegram <-> codex exec bridge; auto-runs setup on first launch
 ├── setup.mjs      # interactive setup — exported, also runnable directly
 ├── SKILL.md       # runbook a Codex agent follows when asked to set this up
@@ -83,15 +87,3 @@ telegram-codex-bot/
 └── README.md
 ```
 
-## Extracting to its own repo
-
-Fully self-contained — no imports from the parent project. To split it out:
-
-```bash
-# preserve history:
-git filter-repo --subdirectory-filter telegram-codex-bot
-
-# or just copy:
-cp -r telegram-codex-bot/ ../telegram-codex-bot-standalone
-cd ../telegram-codex-bot-standalone && git init && git add . && git commit -m "initial import"
-```
