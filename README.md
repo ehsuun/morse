@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="morse.png" alt="morse" width="140">
+  <img src="morse.png" alt="morse" width="240">
 </p>
 
 # morse
