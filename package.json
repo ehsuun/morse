@@ -1,5 +1,5 @@
 {
-  "name": "telegram-codex-bot",
+  "name": "morse",
   "version": "0.0.1",
   "private": true,
   "description": "Minimal Telegram bot that lets you chat with the Codex CLI on your own machine. Bring your own bot token, run locally.",
@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "bin": {
-    "telegram-codex-bot": "./bot.mjs"
+    "morse": "./bot.mjs"
   },
   "scripts": {
     "setup": "node setup.mjs",
