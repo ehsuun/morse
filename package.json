@@ -11,8 +11,11 @@
     "morse": "./bot.mjs"
   },
   "scripts": {
-    "setup": "node setup.mjs",
-    "start": "node bot.mjs"
+    "enable": "node bot.mjs enable",
+    "start": "node bot.mjs",
+    "status": "node bot.mjs status",
+    "setup": "node bot.mjs setup",
+    "test": "node tests/run.mjs"
   },
   "license": "MIT"
 }

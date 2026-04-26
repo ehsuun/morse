@@ -1,55 +1,109 @@
 ---
 name: morse-setup
-description: Help the user set up morse on their machine. Trigger when the user asks to "set up the telegram bot", "connect codex to telegram", or runs `npm start` / `node bot.mjs` / `node setup.mjs` from this folder.
+description: Help the user set up morse on their machine. Trigger when the user asks to "set up the telegram bot", "connect codex to telegram", "enable morse", or runs `morse setup` / `morse enable` / `morse start` / `morse codex`.
 ---
 
 # Skill: morse setup
 
-The user is configuring their own Telegram → Codex bridge. The bot's runtime auto-runs setup on first launch, so there's only one command they need: `npm start`. Your job is small — verify preconditions and point them at it. **Do not drive the prompts yourself.** They're how the user gives explicit consent at each step; if you type the token or acknowledgments, you've broken that.
+The user is configuring their own Telegram -> Codex bridge. Morse should be installed globally, set up once, then enabled from any repo with `morse enable`.
+
+Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active workspace. A terminal UI can share the same remote thread by running `morse codex`.
+
+Do not drive the interactive prompts yourself. The token paste and user-id confirmation are consent moments; if you type the token or acknowledgments, you have broken that.
 
 ## Preconditions
 
 Run in parallel and report any failures:
 
-1. `node --version` → ≥ 20
-2. `which codex` → Codex CLI on PATH
-3. Confirm the working directory is `morse/` (contains `bot.mjs`, `setup.mjs`)
+1. `node --version` -> >= 20
+2. `where codex` on Windows or `which codex` elsewhere -> Codex CLI on PATH
+3. `where morse` / `which morse` if globally installed, or confirm this checkout contains `bot.mjs`, `setup.mjs`, `config.mjs`
 
 If any fails, tell the user and stop. Do not install anything without explicit permission.
 
-## What to tell the user
+## Install
 
-> Run `npm start` in this folder. If `.env` doesn't exist yet, it'll fall through into the one-time setup automatically:
->
-> 1. It tells you how to create a bot in @BotFather (4 messages in the Telegram app — `/newbot`, display name, username, copy the token).
-> 2. You paste that token in the terminal; it's verified with Telegram.
-> 3. You pick the Codex working directory (Enter accepts `$PWD`).
-> 4. You open your new bot in Telegram and send any message. The script reads your user id from that message and asks you to confirm before adding it to the allowlist.
-> 5. Setup finishes, the bot starts polling, and you can send `/help` in Telegram.
->
-> Subsequent `npm start`s skip setup and go straight to polling. To re-run setup later, `npm run setup`.
+From the morse checkout:
 
-If they want you to walk them through it conversationally, narrate each step but still let **them** type the token and the y/n confirmations. Never type a bot token or user-id confirmation through a tool call you control.
+```bash
+npm install -g .
+```
 
-## When something goes wrong
+For local development, `npm link` is also acceptable. End users should use the global `morse` command, not `npm start`.
 
-- **"that does not look like a Telegram bot token"** → they pasted the BotFather message, not just the token. Ask for just the `digits:letters` part.
-- **`Conflict: terminated by other getUpdates request`** → another process is polling the same token. Stop it (likely an earlier `npm start`) and retry.
-- **`Unauthorized` from `getMe`** → wrong token, or the bot was deleted in @BotFather. Re-create or re-paste.
-- **Setup listening forever at "step 2"** → user hasn't messaged their bot yet. Remind them to open `@<botusername>` in Telegram and send `/start`.
+## One-Time Setup
 
-## After setup
+```bash
+morse setup
+```
+
+Setup flow:
+
+1. User creates a bot in @BotFather (`/newbot`, display name, username, copy token).
+2. User pastes the token in the terminal; setup verifies it with Telegram.
+3. User picks the initial Codex workspace.
+4. User opens the new bot in Telegram and sends any message.
+5. Setup reads the sender id and asks the user to confirm before allowlisting.
+6. Setup writes the global config and tells the user to start the bridge.
+
+Global config locations:
+
+- Windows: `%APPDATA%\morse\config.json`
+- macOS/Linux: `~/.config/morse/config.json`
+
+## Daily Use
+
+Keep the local bridge running:
+
+```bash
+morse start
+```
+
+From any repo:
+
+```bash
+morse enable
+```
+
+Then Telegram messages relay into Codex for that repo through the local app-server.
+
+For a shared terminal UI session:
+
+```bash
+morse codex
+```
+
+Codex CLI args pass through unchanged:
+
+```bash
+morse codex --resume
+```
+
+## When Something Goes Wrong
+
+- **No Telegram response after setup** -> setup only saved config; start `morse start` and keep it running.
+- **No Codex response / app-server fails** -> restart `morse start` and check the terminal logs.
+- **`could not find the Codex CLI` / `spawn codex ENOENT`** -> open/install Codex once so the command is available, or set `appServerCommand` to the full codex app-server command. On Windows, morse checks the Codex app install location automatically.
+- **"that does not look like a Telegram bot token"** -> they pasted the BotFather message, not just the token. Ask for just the `digits:letters` part.
+- **`Conflict: terminated by other getUpdates request`** -> another bridge process is polling the same token. Stop it and retry.
+- **`Unauthorized` from `getMe`** -> wrong token, or the bot was deleted in @BotFather. Re-create or re-paste.
+- **Setup listening forever** -> user has not messaged their bot yet. Remind them to open `@<botusername>` in Telegram and send `/start`.
+- **`morse enable` says setup is missing** -> run `morse setup` first, then enable the repo.
+
+## After Setup
 
 Verify with the user:
 
-1. `.env` exists in this folder with `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, `CODEX_CWD`. Don't print the token; show first 8 + last 4 only if you need to confirm it's populated.
-2. Bot logs `morse ready. allowed=<id> cwd=<path>` after setup.
-3. `/help` in Telegram returns the help text.
-4. A simple prompt (e.g. "say hello") streams a reply back.
+1. `morse status` shows `status: configured`, `codex_remote: codex --remote ws://127.0.0.1:17373`, and the intended active workspace.
+2. Start the bridge with `morse start` and keep that process open.
+3. Bot logs `morse ready. allowed=<id> cwd=<path>`.
+4. `/help` in Telegram returns the help text.
+5. `/whoami` shows the active project and cwd.
+6. A simple prompt, such as "say hello", streams a reply back.
 
-## Things you must NOT do
+## Things You Must Not Do
 
-- Do not commit `.env`, `.env.bak`, or any token. They're in `.gitignore` already — keep it that way.
+- Do not commit global config, `.env`, `.env.bak*`, or any token.
 - Do not echo full tokens in your output to the user.
-- Do not modify `setup.mjs` or `bot.mjs` as part of "setting up" — fix the env, not the code.
+- Do not type bot tokens or user-id confirmations through a tool call you control.
 - Do not push this folder anywhere unless the user explicitly asks.

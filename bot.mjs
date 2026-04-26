@@ -1,67 +1,191 @@
 #!/usr/bin/env node
 // Minimal Telegram <-> Codex CLI bridge.
-// One file. Zero npm deps. Long-polls Telegram, pipes each authorized message
-// through `codex exec`, streams stdout back. First run with no .env triggers
-// setup.mjs inline. Every other control lives in the Telegram chat.
+// Zero npm deps. Long-polls Telegram, relays each authorized message into the
+// active repo's Codex thread, and streams stdout back.
 
-import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSetup } from './setup.mjs';
+import {
+  TELEGRAM_LIMIT,
+  argsAfterOptionalSeparator,
+  formatCommandForLog,
+  resolveExecutable,
+  spawnCommand,
+  splitTelegramText,
+} from './helpers.mjs';
+import { enableWorkspace, globalConfigPath, loadGlobalConfig, loadRuntimeConfig } from './config.mjs';
+import { CodexAppServer } from './codex_app_server.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(HERE, '.env');
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-const TELEGRAM_LIMIT = 4000;
 
-await ensureConfigured();
+let runtime;
+let API;
+let codexServer;
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ALLOWED = (process.env.ALLOWED_USER_IDS ?? '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map(Number);
-const CODEX_CMD = (process.env.CODEX_CMD ?? 'codex exec').trim();
-const CODEX_CWD = process.env.CODEX_CWD?.trim() || process.cwd();
-const TIMEOUT_MS = (Number(process.env.CODEX_TIMEOUT_SECONDS ?? 600) || 0) * 1000;
-const STREAM_DEBOUNCE_MS = Number(process.env.STREAM_DEBOUNCE_MS ?? 1200) || 1200;
-const API = `https://api.telegram.org/bot${TOKEN}`;
+// This bot is built for one private control thread. Keep one Codex relay active.
+let activeRun = null;
+let nextRunId = 1;
 
-// One in-flight codex run per chat. /cancel kills it.
-const runs = new Map();
+await main();
 
-console.log(`morse ready. allowed=${ALLOWED.join(',')} cwd=${CODEX_CWD}`);
-console.log(`codex command: ${CODEX_CMD}`);
+async function main() {
+  const command = process.argv[2] ?? 'start';
+  if (command === 'setup') {
+    await runSetup();
+  } else if (command === 'start') {
+    await startBot();
+  } else if (command === 'enable') {
+    enableCurrentWorkspace();
+  } else if (command === 'codex') {
+    await openRemoteCodex();
+  } else if (command === 'status') {
+    showStatus();
+  } else if (command === 'help' || command === '--help' || command === '-h') {
+    console.log(cliHelpText());
+  } else {
+    console.error(`unknown command: ${command}`);
+    console.error(cliHelpText());
+    process.exitCode = 1;
+  }
+}
 
-let offset = 0;
-// eslint-disable-next-line no-constant-condition
-while (true) {
+async function openRemoteCodex() {
+  let config;
   try {
-    const updates = await tg('getUpdates', { offset, timeout: 50 });
-    for (const u of updates) {
-      offset = u.update_id + 1;
-      handleUpdate(u).catch((err) => console.error('handler error', err));
-    }
+    ({ config } = enableWorkspace(process.cwd()));
   } catch (err) {
-    console.error('poll error', err);
-    await sleep(2000);
+    console.error(err.message);
+    process.exitCode = 1;
+    return;
+  }
+
+  const current = loadRuntimeConfig(process.env, process.cwd());
+  const remoteUrl = current?.appServerUrl ?? config.appServerUrl ?? 'ws://127.0.0.1:17373';
+  const server = new CodexAppServer({
+    command: current?.appServerCommand ?? config.appServerCommand ?? `codex app-server --listen ${remoteUrl}`,
+    url: remoteUrl,
+    cwd: process.cwd(),
+  });
+  server.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
+  server.on('fatal', (err) => console.error('codex app-server error', err.message));
+
+  console.log(`morse enabled for ${config.activeWorkspace.label}`);
+  console.log(`starting shared remote: ${remoteUrl}`);
+  try {
+    await server.start();
+  } catch (err) {
+    console.error(`could not start Codex remote: ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const codexArgs = argsAfterOptionalSeparator(process.argv, 3);
+  const args = ['--remote', remoteUrl, ...codexArgs];
+  const resolved = resolveExecutable('codex') ?? 'codex';
+
+  console.log(`starting: ${formatCommandForLog('codex', args)}`);
+
+  const child = spawnCommand(resolved, args, {
+    cwd: process.cwd(),
+    stdio: 'inherit',
+  });
+  await new Promise((resolve) => {
+    child.on('error', (err) => {
+      console.error(formatRunError(err));
+      process.exitCode = 1;
+      resolve();
+    });
+    child.on('close', (code) => {
+      process.exitCode = code ?? 0;
+      resolve();
+    });
+  });
+  server.stop();
+}
+
+async function startBot() {
+  runtime = await ensureConfigured();
+  API = `https://api.telegram.org/bot${runtime.token}`;
+  codexServer = new CodexAppServer({ command: runtime.appServerCommand, url: runtime.appServerUrl, cwd: runtime.cwd });
+  codexServer.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
+  codexServer.on('fatal', (err) => console.error('codex app-server error', err.message));
+
+  console.log(`morse ready. allowed=${runtime.allowedUserIds.join(',')} cwd=${runtime.cwd}`);
+  console.log(`active workspace: ${runtime.workspaceLabel}`);
+  console.log(`codex app-server: ${runtime.appServerCommand}`);
+  console.log(`codex remote: codex --remote ${runtime.appServerUrl}`);
+
+  let offset = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const updates = await tg('getUpdates', { offset, timeout: 50 });
+      for (const u of updates) {
+        offset = u.update_id + 1;
+        handleUpdate(u).catch((err) => console.error('handler error', err));
+      }
+    } catch (err) {
+      console.error('poll error', err);
+      await sleep(2000);
+    }
   }
 }
 
 async function ensureConfigured() {
   loadDotEnv(ENV_PATH);
-  const haveToken = !!process.env.TELEGRAM_BOT_TOKEN;
-  const haveAllowlist = !!(process.env.ALLOWED_USER_IDS ?? '').trim();
-  if (haveToken && haveAllowlist) return;
-  console.log('no .env found — running first-time setup.');
+  let config = loadRuntimeConfig(process.env, process.cwd());
+  if (config) return config;
+  console.log('no morse config found - running first-time setup.');
   await runSetup();
   loadDotEnv(ENV_PATH);
-  if (!process.env.TELEGRAM_BOT_TOKEN || !(process.env.ALLOWED_USER_IDS ?? '').trim()) {
+  config = loadRuntimeConfig(process.env, process.cwd());
+  if (!config) {
     console.error('setup did not complete. exiting.');
     process.exit(1);
   }
+  return config;
+}
+
+function enableCurrentWorkspace() {
+  try {
+    const { config, path } = enableWorkspace(process.cwd());
+    console.log(`morse enabled for ${config.activeWorkspace.label}`);
+    console.log(`cwd: ${config.activeWorkspace.cwd}`);
+    console.log(`config: ${path}`);
+  } catch (err) {
+    console.error(err.message);
+    process.exitCode = 1;
+  }
+}
+
+function showStatus() {
+  loadDotEnv(ENV_PATH);
+  const config = loadGlobalConfig();
+  const current = loadRuntimeConfig(process.env, process.cwd());
+  console.log(`config: ${globalConfigPath()}`);
+  if (!current) {
+    console.log('status: not set up');
+    console.log('next: morse setup');
+    return;
+  }
+  console.log(`status: configured (${current.source})`);
+  console.log(`token: ${maskToken(current.token)}`);
+  console.log(`allowed: ${current.allowedUserIds.join(',')}`);
+  console.log(`codex_app_server: ${current.appServerCommand}`);
+  console.log(`codex_remote: codex --remote ${current.appServerUrl}`);
+  console.log(`active_project: ${current.workspaceLabel}`);
+  console.log(`cwd: ${current.cwd}`);
+  if (config?.activeWorkspace?.enabledAt) console.log(`enabled_at: ${config.activeWorkspace.enabledAt}`);
+}
+
+function maskToken(token) {
+  if (!token) return '(missing)';
+  if (token.length <= 12) return '(set)';
+  return `${token.slice(0, 8)}...${token.slice(-4)}`;
 }
 
 async function handleUpdate(update) {
@@ -70,7 +194,7 @@ async function handleUpdate(update) {
 
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
-  if (!ALLOWED.includes(userId)) {
+  if (!runtime.allowedUserIds.includes(userId)) {
     console.log(`ignored message from unauthorized user ${userId} (${msg.from?.username})`);
     return;
   }
@@ -81,114 +205,110 @@ async function handleUpdate(update) {
     return;
   }
   if (text === '/whoami') {
-    await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\ncwd: ${CODEX_CWD}`);
+    const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
+    await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\nactive_project: ${current.workspaceLabel}\ncwd: ${current.cwd}`);
     return;
   }
   if (text === '/cancel') {
-    const child = runs.get(chatId);
-    if (child) {
-      child.kill('SIGTERM');
-      await send(chatId, 'cancelling...');
+    if (activeRun) {
+      codexServer.interrupt(activeRun.threadId, activeRun.turnId).catch((err) => console.error('interrupt error', err));
+      await send(chatId, `cancelling relay #${activeRun.id}...`);
     } else {
       await send(chatId, 'nothing running.');
     }
     return;
   }
 
-  if (runs.has(chatId)) {
-    await send(chatId, 'still working on the previous message. send /cancel to abort it first.');
+  if (activeRun) {
+    await send(chatId, `relay #${activeRun.id} is still working. send /cancel to abort it first.`);
     return;
   }
 
-  const ack = await send(chatId, '...thinking');
+  const runId = nextRunId++;
+  const ack = await send(chatId, `relay #${runId}: ...thinking`);
   try {
-    await runCodexStreaming(text, chatId, ack.message_id);
+    await runCodexStreaming(text, chatId, ack.message_id, runId);
   } catch (err) {
-    await send(chatId, `error: ${err.message}`);
+    await send(chatId, `relay #${runId} error: ${formatRunError(err)}`);
   }
 }
 
-async function runCodexStreaming(prompt, chatId, ackMessageId) {
-  const [bin, ...baseArgs] = CODEX_CMD.split(/\s+/);
-  const child = spawn(bin, [...baseArgs, prompt], { cwd: CODEX_CWD });
-  runs.set(chatId, child);
+function formatRunError(err) {
+  if (err?.code === 'ENOENT') {
+    return [
+      'could not find the Codex CLI.',
+      'Install/open Codex so the `codex` command is available, or set `appServerCommand` in morse config to the full codex.exe app-server command.',
+    ].join('\n');
+  }
+  return err?.message || String(err);
+}
+
+async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
+  const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
+  const streamDebounceMs = current.streamDebounceMs;
 
   let currentId = ackMessageId;
   let currentText = '';
-  let lastEdited = '...thinking';
+  let lastEdited = `relay #${runId}: ...thinking`;
   let pending = null;
-  let stderrBuf = '';
 
   const flush = async () => {
     pending = null;
     if (!currentText.trim()) return;
 
-    while (currentText.length > TELEGRAM_LIMIT) {
-      const cut = niceCut(currentText, TELEGRAM_LIMIT);
-      const head = currentText.slice(0, cut);
-      const tail = currentText.slice(cut);
-      if (head !== lastEdited) {
-        await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: head });
+    const chunks = splitTelegramText(currentText, TELEGRAM_LIMIT);
+    if (chunks.length === 1) {
+      if (currentText !== lastEdited) {
+        await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: currentText });
+        lastEdited = currentText;
       }
-      const next = await send(chatId, tail || '...');
-      currentId = next.message_id;
-      currentText = tail;
-      lastEdited = tail || '...';
+      return;
     }
 
-    if (currentText !== lastEdited) {
-      await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: currentText });
-      lastEdited = currentText;
+    if (chunks[0] !== lastEdited) {
+      await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: chunks[0] });
     }
+    for (const chunk of chunks.slice(1)) {
+      const next = await send(chatId, chunk);
+      currentId = next.message_id;
+    }
+    currentText = chunks.at(-1);
+    lastEdited = currentText;
   };
 
   const schedule = () => {
     if (pending) return;
-    pending = setTimeout(() => flush().catch((e) => console.error('flush error', e)), STREAM_DEBOUNCE_MS);
+    pending = setTimeout(() => flush().catch((e) => console.error('flush error', e)), streamDebounceMs);
   };
 
-  let timer;
-  if (TIMEOUT_MS > 0) {
-    timer = setTimeout(() => child.kill('SIGKILL'), TIMEOUT_MS);
-  }
-
-  child.stdout.on('data', (d) => {
-    currentText += d.toString().replace(ANSI_RE, '');
-    schedule();
-  });
-  child.stderr.on('data', (d) => (stderrBuf += d.toString()));
-
-  let exitCode;
-  let exitSignal;
   try {
-    [exitCode, exitSignal] = await new Promise((res, rej) => {
-      child.on('error', rej);
-      child.on('close', (c, s) => res([c, s]));
+    const result = await codexServer.relayTurn({
+      cwd: current.cwd,
+      text: prompt,
+      timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
+      onStarted: ({ threadId, turnId }) => {
+        activeRun = { id: runId, threadId, turnId };
+      },
+      onDelta: (delta) => {
+        currentText += delta.replace(ANSI_RE, '');
+        schedule();
+      },
     });
   } finally {
-    if (timer) clearTimeout(timer);
     if (pending) clearTimeout(pending);
-    runs.delete(chatId);
+    if (activeRun?.id === runId) activeRun = null;
   }
   await flush();
 
-  if (exitSignal === 'SIGTERM' || exitSignal === 'SIGKILL') {
-    await send(chatId, 'cancelled.');
-  } else if (exitCode !== 0) {
-    const detail = stderrBuf.replace(ANSI_RE, '').trim() || '(no stderr)';
-    await send(chatId, `codex exited ${exitCode}\n${detail.slice(0, TELEGRAM_LIMIT)}`);
-  } else if (!currentText.trim()) {
-    await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: '(no output)' });
+  if (!currentText.trim()) {
+    await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: `relay #${runId}: (no output)` });
   }
 }
 
-function niceCut(text, limit) {
-  const slice = text.slice(0, limit);
-  const para = slice.lastIndexOf('\n\n');
-  if (para > limit * 0.5) return para + 2;
-  const nl = slice.lastIndexOf('\n');
-  if (nl > limit * 0.5) return nl + 1;
-  return limit;
+async function sendLong(chatId, text) {
+  for (const chunk of splitTelegramText(text, TELEGRAM_LIMIT)) {
+    await send(chatId, chunk);
+  }
 }
 
 function send(chatId, text) {
@@ -231,11 +351,26 @@ function helpText() {
   return [
     'morse',
     '',
-    'send any message and i will run it through `codex exec` on the host machine.',
+    'send any message and i will relay it to the active Codex remote thread for this repo.',
+    'for the same session in terminal, run `morse codex` from that repo.',
     '',
     'commands:',
     '  /help     this message',
-    '  /whoami   show your user id, chat id, and the working directory',
-    '  /cancel   abort the codex run currently in progress',
+    '  /whoami   show your user id, chat id, active project, and working directory',
+    '  /cancel   abort the Codex relay currently in progress',
+  ].join('\n');
+}
+
+function cliHelpText() {
+  return [
+    'morse',
+    '',
+    'commands:',
+    '  morse setup    one-time Telegram bot/user setup',
+    '  morse start    run the Telegram polling bridge',
+    '  morse enable   set the current directory as the active Codex workspace',
+    '  morse codex [codex args]',
+    '                 enable this repo and open Codex on the shared remote',
+    '  morse status   show setup and active workspace',
   ].join('\n');
 }
