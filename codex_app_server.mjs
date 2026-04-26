@@ -350,6 +350,11 @@ export class CodexAppServer extends EventEmitter {
       return;
     }
 
+    if (message.id !== undefined && message.method) {
+      this.emit('request', message);
+      return;
+    }
+
     if (message.id !== undefined) {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -366,6 +371,14 @@ export class CodexAppServer extends EventEmitter {
       this.emit('server-error', message.params);
     }
     this.emit('notification', message);
+  }
+
+  respond(id, result) {
+    this.write({ jsonrpc: '2.0', id, result });
+  }
+
+  respondError(id, code, message) {
+    this.write({ jsonrpc: '2.0', id, error: { code, message } });
   }
 
   rejectAll(err) {

@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSetup } from './setup.mjs';
+import { approvalActionLabel, approvalKeyboard, approvalMessage, approvalResponse } from './approvals.mjs';
 import {
   TELEGRAM_LIMIT,
   argsAfterOptionalSeparator,
@@ -29,6 +30,9 @@ let codexServer;
 // This bot is built for one private control thread. Keep one Codex relay active.
 let activeRun = null;
 let nextRunId = 1;
+let nextApprovalId = 1;
+let lastChatId = null;
+const pendingApprovals = new Map();
 
 await main();
 
@@ -113,6 +117,10 @@ async function startBot() {
   codexServer = new CodexAppServer({ command: runtime.appServerCommand, url: runtime.appServerUrl, cwd: runtime.cwd });
   codexServer.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
   codexServer.on('fatal', (err) => console.error('codex app-server error', err.message));
+  codexServer.on('request', (request) => handleCodexRequest(request).catch((err) => {
+    console.error('codex request handler error', err);
+    codexServer.respondError(request.id, -32000, err.message || String(err));
+  }));
 
   console.log(`morse ready. allowed=${runtime.allowedUserIds.join(',')} cwd=${runtime.cwd}`);
   console.log(`active workspace: ${runtime.workspaceLabel}`);
@@ -189,6 +197,11 @@ function maskToken(token) {
 }
 
 async function handleUpdate(update) {
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query);
+    return;
+  }
+
   const msg = update.message;
   if (!msg?.text) return;
 
@@ -198,6 +211,7 @@ async function handleUpdate(update) {
     console.log(`ignored message from unauthorized user ${userId} (${msg.from?.username})`);
     return;
   }
+  lastChatId = chatId;
 
   const text = msg.text.trim();
   if (text === '/start' || text === '/help') {
@@ -287,7 +301,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
       text: prompt,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
       onStarted: ({ threadId, turnId }) => {
-        activeRun = { id: runId, threadId, turnId };
+        activeRun = { id: runId, threadId, turnId, chatId };
       },
       onDelta: (delta) => {
         currentText += delta.replace(ANSI_RE, '');
@@ -305,14 +319,88 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   }
 }
 
+async function handleCodexRequest(request) {
+  const chatId = activeRun?.chatId ?? lastChatId;
+  if (!chatId) {
+    codexServer.respondError(request.id, -32000, 'morse has no Telegram chat to request approval from');
+    return;
+  }
+
+  if (!isApprovalRequest(request.method)) {
+    await send(chatId, `Codex requested unsupported client action:\n${request.method}`);
+    codexServer.respondError(request.id, -32601, `unsupported request: ${request.method}`);
+    return;
+  }
+
+  const approvalId = String(nextApprovalId++);
+  const keyboard = approvalKeyboard(request.method).map((row) => row.map((button) => ({
+    text: button.text,
+    callback_data: `ap:${approvalId}:${button.callback_data}`,
+  })));
+  const message = await send(chatId, approvalMessage(request.method, request.params), {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+
+  pendingApprovals.set(approvalId, {
+    request,
+    chatId,
+    messageId: message.message_id,
+    createdAt: Date.now(),
+  });
+}
+
+async function handleCallbackQuery(query) {
+  const userId = query.from?.id;
+  if (!runtime.allowedUserIds.includes(userId)) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Not allowed.', show_alert: true });
+    return;
+  }
+
+  const match = String(query.data ?? '').match(/^ap:([^:]+):(.+)$/);
+  if (!match) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown action.', show_alert: true });
+    return;
+  }
+
+  const [, approvalId, action] = match;
+  const approval = pendingApprovals.get(approvalId);
+  if (!approval) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Approval expired.', show_alert: true });
+    return;
+  }
+
+  pendingApprovals.delete(approvalId);
+  const result = approvalResponse(approval.request.method, approval.request.params, action);
+  codexServer.respond(approval.request.id, result);
+
+  const label = approvalActionLabel(action);
+  await tg('answerCallbackQuery', { callback_query_id: query.id, text: label });
+  await tg('editMessageReplyMarkup', {
+    chat_id: approval.chatId,
+    message_id: approval.messageId,
+    reply_markup: { inline_keyboard: [] },
+  });
+  await send(approval.chatId, `approval ${approvalId}: ${label}`);
+}
+
+function isApprovalRequest(method) {
+  return [
+    'item/commandExecution/requestApproval',
+    'item/fileChange/requestApproval',
+    'item/permissions/requestApproval',
+    'execCommandApproval',
+    'applyPatchApproval',
+  ].includes(method);
+}
+
 async function sendLong(chatId, text) {
   for (const chunk of splitTelegramText(text, TELEGRAM_LIMIT)) {
     await send(chatId, chunk);
   }
 }
 
-function send(chatId, text) {
-  return tg('sendMessage', { chat_id: chatId, text });
+function send(chatId, text, extra = {}) {
+  return tg('sendMessage', { chat_id: chatId, text, ...extra });
 }
 
 async function tg(method, body) {

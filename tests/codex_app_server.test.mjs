@@ -80,3 +80,20 @@ test('getOrCreateThread resumes matching loaded threads so this client subscribe
   assert.equal(thread.resumed, true);
   assert.deepEqual(calls.map((call) => call.method), ['thread/loaded/list', 'thread/read', 'thread/resume']);
 });
+
+test('handleJson emits server requests instead of treating them as responses', async () => {
+  const server = new CodexAppServer();
+  const request = await new Promise((resolve) => {
+    server.on('request', resolve);
+    server.handleJson(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'approval-1',
+      method: 'item/commandExecution/requestApproval',
+      params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', command: 'npm test' },
+    }));
+  });
+
+  assert.equal(request.id, 'approval-1');
+  assert.equal(request.method, 'item/commandExecution/requestApproval');
+  assert.equal(request.params.command, 'npm test');
+});

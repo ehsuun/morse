@@ -108,6 +108,8 @@ Only one relay runs at a time. Morse labels work as `relay #N` so `/cancel` has 
 
 Long Codex replies are streamed back by editing the current Telegram message, then split into follow-up messages only when Telegram's message limit requires it.
 
+When Codex needs approval, morse sends a Telegram message with inline buttons. You can approve once, approve for the session, deny, or abort directly from Telegram. This is used for command execution, file changes, and extra permission requests.
+
 ## How It Works
 
 Morse uses Codex's local app-server:
@@ -165,6 +167,10 @@ If it still hangs, check the `morse start` terminal logs.
 **Codex receives Telegram messages but Telegram does not receive replies**
 
 Make sure Codex was opened with `morse codex`, not a standalone Codex session. Morse can only share the local remote session it is connected to.
+
+**Codex is waiting for approval**
+
+Use the approval buttons in Telegram. If no buttons appear, restart `morse start`; older bridge processes did not handle app-server approval requests.
 
 **`could not find the Codex CLI`**
 
