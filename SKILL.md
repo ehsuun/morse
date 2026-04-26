@@ -1,9 +1,9 @@
 ---
-name: telegram-codex-bot-setup
-description: Help the user set up telegram-codex-bot on their machine. Trigger when the user asks to "set up the telegram bot", "connect codex to telegram", or runs `npm start` / `node bot.mjs` / `node setup.mjs` from this folder.
+name: morse-setup
+description: Help the user set up morse on their machine. Trigger when the user asks to "set up the telegram bot", "connect codex to telegram", or runs `npm start` / `node bot.mjs` / `node setup.mjs` from this folder.
 ---
 
-# Skill: telegram-codex-bot setup
+# Skill: morse setup
 
 The user is configuring their own Telegram → Codex bridge. The bot's runtime auto-runs setup on first launch, so there's only one command they need: `npm start`. Your job is small — verify preconditions and point them at it. **Do not drive the prompts yourself.** They're how the user gives explicit consent at each step; if you type the token or acknowledgments, you've broken that.
 
@@ -13,7 +13,7 @@ Run in parallel and report any failures:
 
 1. `node --version` → ≥ 20
 2. `which codex` → Codex CLI on PATH
-3. Confirm the working directory is `telegram-codex-bot/` (contains `bot.mjs`, `setup.mjs`)
+3. Confirm the working directory is `morse/` (contains `bot.mjs`, `setup.mjs`)
 
 If any fails, tell the user and stop. Do not install anything without explicit permission.
 
@@ -43,7 +43,7 @@ If they want you to walk them through it conversationally, narrate each step but
 Verify with the user:
 
 1. `.env` exists in this folder with `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`, `CODEX_CWD`. Don't print the token; show first 8 + last 4 only if you need to confirm it's populated.
-2. Bot logs `telegram-codex-bot ready. allowed=<id> cwd=<path>` after setup.
+2. Bot logs `morse ready. allowed=<id> cwd=<path>` after setup.
 3. `/help` in Telegram returns the help text.
 4. A simple prompt (e.g. "say hello") streams a reply back.
 

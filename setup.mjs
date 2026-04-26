@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Interactive setup for telegram-codex-bot. Node-only, zero deps.
+// Interactive setup for morse. Node-only, zero deps.
 // Exports `runSetup()` so bot.mjs can call it inline on first run.
 //
 // Two real touches: paste the bot token, confirm "yes that's me" when we
@@ -30,6 +30,12 @@ export async function runSetup() {
 
     const { token, bot } = await getBotToken(ask);
 
+    console.log('');
+    console.log('-- working directory --');
+    console.log('Codex will read, write, and run commands inside this folder when you');
+    console.log('message the bot. Default is the current folder. Pick a project directory,');
+    console.log('not your home folder.');
+    console.log('');
     const cwdDefault = process.cwd();
     const cwd = (await ask(`Codex working directory [${cwdDefault}]: `)).trim() || cwdDefault;
 
@@ -47,19 +53,29 @@ export async function runSetup() {
 }
 
 function preamble() {
+  for (let i = 0; i < 15; i++) console.log('');
+  console.log('     ▄██▄        ▄████████████████▄        ▄██▄');
+  console.log('    ██████      ████████████████████      ██████');
+  console.log('     ▀██▀        ▀████████████████▀        ▀██▀');
+  for (let i = 0; i < 15; i++) console.log('');
+  console.log('== morse setup (one-time) ==');
   console.log('');
-  console.log('== telegram-codex-bot setup (one-time) ==');
+  console.log('This script is just here to help you. It is between you and Telegram —');
+  console.log('nothing is sent to morse\'s author, there is no "morse server", no');
+  console.log('analytics, no account login. When you message your bot later, your phone');
+  console.log('talks to api.telegram.org and this machine talks to api.telegram.org.');
+  console.log('That is the whole network path.');
   console.log('');
-  console.log('This will:');
-  console.log('  1. Tell you how to create a bot in @BotFather (you do that in your Telegram app).');
-  console.log('  2. Take the bot token you paste here and verify it with Telegram.');
-  console.log('  3. Listen for the first message you send to your new bot, read your Telegram user id');
-  console.log('     from it, and ask you to confirm before adding it to the allowlist.');
-  console.log('  4. Write a .env file in this folder with: bot token, your user id, working directory.');
+  console.log('What this setup does, in order:');
+  console.log('  1. Walk you through creating a bot in @BotFather (you do that in the');
+  console.log('     Telegram app — we never see your Telegram login).');
+  console.log('  2. Verify the token you paste here (one getMe call to api.telegram.org).');
+  console.log('  3. Ask where you want Codex to operate (the working directory).');
+  console.log('  4. Wait for the first message you send your new bot so we can read your');
+  console.log('     user id, then ask you to confirm before allowlisting.');
+  console.log('  5. Write .env in this folder (mode 0600 — readable only by you).');
   console.log('');
-  console.log('It will NOT log into your Telegram account, store account credentials, or touch anything');
-  console.log('outside this folder. After this, every control lives in the Telegram chat — you should');
-  console.log('not need to come back here except to keep the bot process running.');
+  console.log('Ctrl+C at any prompt bails out — nothing is written until step 5.');
   console.log('');
 }
 
@@ -90,6 +106,9 @@ async function getBotToken(ask) {
 async function detectUserId(token, botUsername, ask, confirm) {
   console.log('');
   console.log('-- step 2: identify yourself --');
+  console.log('Only allowlisted Telegram user ids get their messages handled — everyone');
+  console.log('else is silently ignored. So we need to know which one is you.');
+  console.log('');
   console.log(`  - In Telegram, open @${botUsername} and send /start (or any message).`);
   console.log('  - I will read the sender id from that message and ask you to confirm.');
   console.log('');

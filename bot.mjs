@@ -32,7 +32,7 @@ const API = `https://api.telegram.org/bot${TOKEN}`;
 // One in-flight codex run per chat. /cancel kills it.
 const runs = new Map();
 
-console.log(`telegram-codex-bot ready. allowed=${ALLOWED.join(',')} cwd=${CODEX_CWD}`);
+console.log(`morse ready. allowed=${ALLOWED.join(',')} cwd=${CODEX_CWD}`);
 console.log(`codex command: ${CODEX_CMD}`);
 
 let offset = 0;
@@ -229,7 +229,7 @@ function loadDotEnv(path) {
 
 function helpText() {
   return [
-    'telegram-codex-bot',
+    'morse',
     '',
     'send any message and i will run it through `codex exec` on the host machine.',
     '',
