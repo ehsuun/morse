@@ -104,9 +104,11 @@ morse enable
 | `/cancel` | Interrupt the current Codex relay |
 | anything else | Send a turn to Codex for the active workspace |
 
-Only one relay runs at a time. Morse labels work as `relay #N` so `/cancel` has a clear target.
+Only one Codex turn runs at a time.
 
 Long Codex replies are streamed back by editing the current Telegram message, then split into follow-up messages only when Telegram's message limit requires it.
+
+If you send another message while Codex is still working, morse queues it and sends it after the current turn finishes.
 
 When Codex needs approval, morse sends a Telegram message with inline buttons. You can approve once, approve for the session, deny, or abort directly from Telegram. This is used for command execution, file changes, and extra permission requests.
 
@@ -152,7 +154,7 @@ This bot lets Telegram talk to a coding agent on your machine.
 
 Run `morse start` and keep it open. Setup only writes config.
 
-**Telegram shows `relay #N: ...thinking` forever**
+**Telegram shows `working...` forever**
 
 Restart both sides so they load the latest morse code:
 

@@ -33,6 +33,8 @@ let nextRunId = 1;
 let nextApprovalId = 1;
 let lastChatId = null;
 const pendingApprovals = new Map();
+const queuedRuns = [];
+let queueDraining = false;
 
 await main();
 
@@ -226,24 +228,38 @@ async function handleUpdate(update) {
   if (text === '/cancel') {
     if (activeRun) {
       codexServer.interrupt(activeRun.threadId, activeRun.turnId).catch((err) => console.error('interrupt error', err));
-      await send(chatId, `cancelling relay #${activeRun.id}...`);
+      await send(chatId, 'cancelling current request...');
     } else {
       await send(chatId, 'nothing running.');
     }
     return;
   }
 
-  if (activeRun) {
-    await send(chatId, `relay #${activeRun.id} is still working. send /cancel to abort it first.`);
-    return;
-  }
-
   const runId = nextRunId++;
-  const ack = await send(chatId, `relay #${runId}: ...thinking`);
+  const queued = activeRun || queueDraining || queuedRuns.length > 0;
+  const ack = await send(chatId, queued ? `queued (${queuedRuns.length + 1} ahead)` : 'working...');
+  queuedRuns.push({ id: runId, text, chatId, ackMessageId: ack.message_id });
+  drainQueue().catch((err) => console.error('queue drain error', err));
+}
+
+async function drainQueue() {
+  if (queueDraining) return;
+  queueDraining = true;
   try {
-    await runCodexStreaming(text, chatId, ack.message_id, runId);
-  } catch (err) {
-    await send(chatId, `relay #${runId} error: ${formatRunError(err)}`);
+    while (queuedRuns.length > 0) {
+      const run = queuedRuns.shift();
+      try {
+        await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id);
+      } catch (err) {
+        await tg('editMessageText', {
+          chat_id: run.chatId,
+          message_id: run.ackMessageId,
+          text: `error: ${formatRunError(err)}`,
+        });
+      }
+    }
+  } finally {
+    queueDraining = false;
   }
 }
 
@@ -263,7 +279,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
 
   let currentId = ackMessageId;
   let currentText = '';
-  let lastEdited = `relay #${runId}: ...thinking`;
+  let lastEdited = '';
   let pending = null;
 
   const flush = async () => {
@@ -315,7 +331,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   await flush();
 
   if (!currentText.trim()) {
-    await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: `relay #${runId}: (no output)` });
+    await tg('editMessageText', { chat_id: chatId, message_id: currentId, text: '(no output)' });
   }
 }
 
@@ -441,6 +457,7 @@ function helpText() {
     '',
     'send any message and i will relay it to the active Codex remote thread for this repo.',
     'for the same session in terminal, run `morse codex` from that repo.',
+    'if Codex is busy, messages are queued and run in order.',
     '',
     'commands:',
     '  /help     this message',
