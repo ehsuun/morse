@@ -1,6 +1,6 @@
 {
   "name": "morse-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Minimal Telegram bot that lets you chat with the Codex CLI on your own machine. Bring your own bot token, run locally.",
   "type": "module",
   "repository": {
