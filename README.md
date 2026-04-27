@@ -100,6 +100,7 @@ morse enable
 | message | behavior |
 |---|---|
 | `/help`, `/start` | Show bot help |
+| `/slash`, `/commands`, `slash` | Show Codex slash-command buttons |
 | `/whoami` | Show your user id, chat id, active project, and cwd |
 | `/cancel` | Interrupt the current Codex relay |
 | anything else | Send a turn to Codex for the active workspace |
@@ -109,6 +110,8 @@ Only one Codex turn runs at a time.
 Long Codex replies are streamed back by editing the current Telegram message, then split into follow-up messages only when Telegram's message limit requires it.
 
 If you send another message while Codex is still working, morse queues it and sends it after the current turn finishes.
+
+Unknown slash commands are relayed to Codex unchanged. For common Codex slash commands, send `slash` and tap a button such as `/review` or `/compact`.
 
 When Codex needs approval, morse sends a Telegram message with inline buttons. You can approve once, approve for the session, deny, or abort directly from Telegram. This is used for command execution, file changes, and extra permission requests.
 

@@ -18,6 +18,7 @@ import {
 } from './helpers.mjs';
 import { enableWorkspace, globalConfigPath, loadGlobalConfig, loadRuntimeConfig } from './config.mjs';
 import { CodexAppServer } from './codex_app_server.mjs';
+import { isSlashPaletteRequest, slashCommandById, slashCommandKeyboard, slashCommandMessage } from './slash_commands.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(HERE, '.env');
@@ -220,6 +221,12 @@ async function handleUpdate(update) {
     await send(chatId, helpText());
     return;
   }
+  if (isSlashPaletteRequest(text)) {
+    await send(chatId, slashCommandMessage(), {
+      reply_markup: { inline_keyboard: slashCommandKeyboard() },
+    });
+    return;
+  }
   if (text === '/whoami') {
     const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
     await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\nactive_project: ${current.workspaceLabel}\ncwd: ${current.cwd}`);
@@ -235,6 +242,10 @@ async function handleUpdate(update) {
     return;
   }
 
+  await enqueueRun(text, chatId);
+}
+
+async function enqueueRun(text, chatId) {
   const runId = nextRunId++;
   const queued = activeRun || queueDraining || queuedRuns.length > 0;
   const ack = await send(chatId, queued ? `queued (${queuedRuns.length + 1} ahead)` : 'working...');
@@ -373,6 +384,11 @@ async function handleCallbackQuery(query) {
   }
 
   const match = String(query.data ?? '').match(/^ap:([^:]+):(.+)$/);
+  if (String(query.data ?? '').startsWith('cmd:')) {
+    await handleSlashCommandCallback(query);
+    return;
+  }
+
   if (!match) {
     await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown action.', show_alert: true });
     return;
@@ -397,6 +413,25 @@ async function handleCallbackQuery(query) {
     reply_markup: { inline_keyboard: [] },
   });
   await send(approval.chatId, `approval ${approvalId}: ${label}`);
+}
+
+async function handleSlashCommandCallback(query) {
+  const id = String(query.data ?? '').slice('cmd:'.length);
+  const command = slashCommandById(id);
+  if (!command) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown command.', show_alert: true });
+    return;
+  }
+
+  const chatId = query.message?.chat?.id ?? lastChatId;
+  if (!chatId) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'No active chat.', show_alert: true });
+    return;
+  }
+
+  lastChatId = chatId;
+  await tg('answerCallbackQuery', { callback_query_id: query.id, text: `Queued ${command.command}` });
+  await enqueueRun(command.command, chatId);
 }
 
 function isApprovalRequest(method) {
@@ -461,6 +496,7 @@ function helpText() {
     '',
     'commands:',
     '  /help     this message',
+    '  /slash    show Codex slash-command buttons',
     '  /whoami   show your user id, chat id, active project, and working directory',
     '  /cancel   abort the Codex relay currently in progress',
   ].join('\n');
