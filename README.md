@@ -4,24 +4,11 @@
 
 # morse
 
-Morse is a local Telegram remote control for Codex.
+Local Telegram control for Codex.
 
-You create your own Telegram bot, run morse on your own machine, and use Telegram as a control surface for the active Codex workspace. There is no morse server, account, webhook, database, or hosted relay.
+You bring a Telegram bot token. Morse runs on your machine. There is no morse server.
 
-The intended flow is:
-
-```bash
-morse start      # keep the Telegram bridge online
-morse codex      # open Codex in this repo on the shared local remote
-```
-
-Then you can work in the Codex terminal UI, step away, and continue from Telegram.
-
-## Requirements
-
-- Node.js 20+
-- Codex installed and signed in
-- A Telegram account
+It is small on purpose. Read it, change it, extend it.
 
 ## Install
 
@@ -31,56 +18,86 @@ From this checkout:
 npm install -g .
 ```
 
-Verify the command is available:
+Requirements:
+
+- Node.js 20+
+- Codex installed and signed in
+- Telegram
+
+## Use
+
+Do this once:
 
 ```bash
-morse status
-```
-
-This repo is still private and not published to npm. For local development, `npm link` is also fine.
-
-## One-Time Setup
-
-```bash
+npm install -g .
 morse setup
 ```
 
-Setup does three things:
-
-1. Helps you create a Telegram bot with `@BotFather`.
-2. Verifies the bot token with Telegram.
-3. Saves your allowed Telegram user id and first Codex workspace.
-
-The config is written once at:
-
-- Windows: `%APPDATA%\morse\config.json`
-- macOS/Linux: `~/.config/morse/config.json`
-
-Your bot token stays on your machine. Telegram messages go through `api.telegram.org`; Codex traffic stays between this machine and the local Codex app-server.
-
-## Daily Use
-
-Keep the bridge running in one terminal:
+Do this whenever you want the Telegram bot online:
 
 ```bash
 morse start
 ```
 
-That process polls Telegram and relays allowed messages into Codex. It must stay running for the bot to reply.
+Keep this process running. It only polls Telegram while idle.
 
-In the repo you want Codex to work in, start Codex through morse:
+Do this from the repo you want Codex to work in:
 
 ```bash
-cd path/to/repo
 morse codex
 ```
 
-`morse codex` does two things:
+Then use Telegram. If you switch repos, run `morse codex` or `morse enable` from the new repo.
 
-1. Marks the current repo as the active morse workspace.
-2. Opens `codex --remote ws://127.0.0.1:17373`.
+## Setup
 
-Telegram and the terminal UI then share the same local Codex app-server thread. This is the phone handoff path.
+Run once:
+
+```bash
+morse setup
+```
+
+Setup creates a user config:
+
+- Windows: `%APPDATA%\morse\config.json`
+- macOS/Linux: `~/.config/morse/config.json`
+
+It stores:
+
+- your Telegram bot token
+- allowed Telegram user ids
+- allowed Telegram private chat ids
+- the active Codex workspace
+
+Your token stays on your machine. Telegram traffic goes through `api.telegram.org`. Codex uses its normal Codex services.
+
+## Run
+
+Keep the Telegram bridge running:
+
+```bash
+morse start
+```
+
+In a repo:
+
+```bash
+morse codex
+```
+
+This marks the repo active, starts a per-run local Codex app-server on a random loopback port, and opens Codex against it:
+
+```bash
+codex --remote ws://127.0.0.1:<port>
+```
+
+Telegram messages are relayed into that active Codex app-server thread. When `morse codex` exits, the session file is removed and the local app-server is stopped.
+
+To switch repos without opening Codex:
+
+```bash
+morse enable
+```
 
 Codex args pass through:
 
@@ -89,112 +106,41 @@ morse codex --resume
 morse codex --model gpt-5.2
 ```
 
-If you only want to switch the active repo without opening Codex:
-
-```bash
-morse enable
-```
-
-## Telegram Commands
+## Telegram
 
 | message | behavior |
 |---|---|
-| `/help`, `/start` | Show bot help |
+| `/help`, `/start` | Show morse help |
 | `/slash`, `/commands`, `slash` | Show Codex slash-command buttons |
-| `/whoami` | Show your user id, chat id, active project, and cwd |
-| `/cancel` | Interrupt the current Codex relay |
-| anything else | Send a turn to Codex for the active workspace |
+| `/whoami` | Show user id, chat id, active project, and cwd |
+| `/cancel` | Interrupt the current Codex turn |
+| anything else | Send text to Codex |
 
-Only one Codex turn runs at a time.
+Unknown slash commands are sent to Codex unchanged.
 
-Long Codex replies are streamed back by editing the current Telegram message, then split into follow-up messages only when Telegram's message limit requires it.
+If Codex is busy, messages are queued and sent in order.
 
-If you send another message while Codex is still working, morse queues it and sends it after the current turn finishes.
-
-Unknown slash commands are relayed to Codex unchanged. For common Codex slash commands, send `slash` and tap a button such as `/review` or `/compact`.
-
-When Codex needs approval, morse sends a Telegram message with inline buttons. You can approve once, approve for the session, deny, or abort directly from Telegram. This is used for command execution, file changes, and extra permission requests.
-
-## How It Works
-
-Morse uses Codex's local app-server:
-
-```bash
-codex app-server --listen ws://127.0.0.1:17373
-```
-
-`morse start` connects to that app-server and to Telegram. `morse codex` opens the Codex terminal UI against the same app-server with:
-
-```bash
-codex --remote ws://127.0.0.1:17373
-```
-
-When the active thread is already loaded by the terminal UI, morse resumes it on the bridge connection so it can receive response events and stream them back to Telegram.
+If Codex asks for approval, morse sends Telegram buttons.
 
 ## Commands
 
 ```bash
-morse setup              # one-time Telegram bot/user setup
-morse start              # run the Telegram polling bridge
+morse setup              # configure Telegram and first workspace
+morse start              # run the Telegram bridge
 morse enable             # set current directory as active workspace
-morse codex [codex args] # enable current repo and open Codex on the shared remote
-morse status             # show setup and active workspace
+morse codex [codex args] # open Codex on the shared local remote
+morse status             # print config and active workspace
 ```
-
-## Security Notes
-
-This bot lets Telegram talk to a coding agent on your machine.
-
-- Keep the Telegram bot token secret.
-- Keep the allowlist narrow.
-- Enable workspaces deliberately.
-- Codex approval and sandbox behavior still apply.
-- Morse ignores Telegram users outside `allowedUserIds`.
-
-## Troubleshooting
-
-**No Telegram response after setup**
-
-Run `morse start` and keep it open. Setup only writes config.
-
-**Telegram shows `working...` forever**
-
-Restart both sides so they load the latest morse code:
-
-```bash
-npm install -g .
-morse start
-morse codex
-```
-
-If it still hangs, check the `morse start` terminal logs.
-
-**Codex receives Telegram messages but Telegram does not receive replies**
-
-Make sure Codex was opened with `morse codex`, not a standalone Codex session. Morse can only share the local remote session it is connected to.
-
-**Codex is waiting for approval**
-
-Use the approval buttons in Telegram. If no buttons appear, restart `morse start`; older bridge processes did not handle app-server approval requests.
-
-**`could not find the Codex CLI`**
-
-Open or install Codex once so the `codex` command is available. On Windows, morse also checks the Codex app install location automatically.
-
-**Telegram `Conflict: terminated by other getUpdates request`**
-
-Another morse process is polling the same bot token. Stop the old bridge and start one process.
 
 ## Config
 
-Global config example:
+Example:
 
 ```json
 {
   "telegramBotToken": "...",
   "allowedUserIds": [123456789],
-  "appServerUrl": "ws://127.0.0.1:17373",
-  "appServerCommand": "codex app-server --listen ws://127.0.0.1:17373",
+  "allowedChatIds": [123456789],
   "timeoutSeconds": 600,
   "streamDebounceMs": 1200,
   "activeWorkspace": {
@@ -205,14 +151,20 @@ Global config example:
 }
 ```
 
-Legacy repo-local `.env` config is still recognized as a fallback for older clones. New setup writes the global config.
+Legacy `.env` config is still read as a fallback.
+
+## Notes
+
+- Keep the bot token secret.
+- Keep the allowlist small.
+- Morse only responds to allowed users in allowed private chats.
+- Codex approval and sandbox behavior still apply.
+- One `morse start` process should poll a bot token at a time.
+- This is not an npm package yet. Install from the checkout.
 
 ## Development
 
 ```bash
 npm test
-npm run setup
 npm start
 ```
-
-The npm scripts are for working inside this repo. End users should use the global `morse` command.

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -12,14 +12,42 @@ export function globalConfigPath() {
   return resolve(base, 'morse', 'config.json');
 }
 
+export function runtimeStatePath() {
+  if (process.env.MORSE_STATE) return resolve(process.env.MORSE_STATE);
+  return resolve(dirname(globalConfigPath()), 'state.json');
+}
+
 export function loadGlobalConfig(path = globalConfigPath()) {
   if (!existsSync(path)) return null;
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+export function loadRuntimeState(path = runtimeStatePath()) {
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
 export function saveGlobalConfig(config, path = globalConfigPath()) {
+  return savePrivateJson(config, path);
+}
+
+export function saveRuntimeState(state, path = runtimeStatePath()) {
+  return savePrivateJson(state, path);
+}
+
+export function clearRuntimeState(expectedState = null, path = runtimeStatePath()) {
+  if (!existsSync(path)) return;
+  if (expectedState) {
+    const current = loadRuntimeState(path);
+    if (current?.appServerUrl !== expectedState.appServerUrl || current?.pid !== expectedState.pid) return;
+  }
+  rmSync(path, { force: true });
+}
+
+function savePrivateJson(value, path) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
   return path;
 }
 
@@ -48,6 +76,7 @@ export function runtimeFromGlobalConfig(config, fallbackCwd = process.cwd()) {
     source: 'global',
     token: config.telegramBotToken,
     allowedUserIds: config.allowedUserIds,
+    allowedChatIds: config.allowedChatIds ?? [],
     codexCommand: normalizeCodexCommand(config.codexCommand),
     cwd: activeWorkspace.cwd,
     workspaceLabel: activeWorkspace.label ?? activeWorkspace.cwd,
@@ -66,6 +95,7 @@ export function runtimeFromEnv(env = process.env, fallbackCwd = process.cwd()) {
     source: 'env',
     token: env.TELEGRAM_BOT_TOKEN,
     allowedUserIds,
+    allowedChatIds: parseAllowedUserIds(env.ALLOWED_CHAT_IDS),
     codexCommand: normalizeCodexCommand(env.CODEX_CMD),
     cwd,
     workspaceLabel: basename(resolve(cwd)) || cwd,

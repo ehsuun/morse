@@ -4,6 +4,7 @@
 // active repo's Codex thread, and streams stdout back.
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSetup } from './setup.mjs';
@@ -16,9 +17,19 @@ import {
   spawnCommand,
   splitTelegramText,
 } from './helpers.mjs';
-import { enableWorkspace, globalConfigPath, loadGlobalConfig, loadRuntimeConfig } from './config.mjs';
+import {
+  clearRuntimeState,
+  enableWorkspace,
+  globalConfigPath,
+  loadGlobalConfig,
+  loadRuntimeConfig,
+  loadRuntimeState,
+  runtimeStatePath,
+  saveRuntimeState,
+} from './config.mjs';
 import { CodexAppServer } from './codex_app_server.mjs';
 import { isSlashPaletteRequest, slashCommandById, slashCommandKeyboard, slashCommandMessage } from './slash_commands.mjs';
+import { authorizeTelegramPeer } from './telegram_auth.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(HERE, '.env');
@@ -70,10 +81,10 @@ async function openRemoteCodex() {
     return;
   }
 
-  const current = loadRuntimeConfig(process.env, process.cwd());
-  const remoteUrl = current?.appServerUrl ?? config.appServerUrl ?? 'ws://127.0.0.1:17373';
+  const remoteUrl = await createLoopbackRemoteUrl();
+  const appServerCommand = `codex app-server --listen ${remoteUrl}`;
   const server = new CodexAppServer({
-    command: current?.appServerCommand ?? config.appServerCommand ?? `codex app-server --listen ${remoteUrl}`,
+    command: appServerCommand,
     url: remoteUrl,
     cwd: process.cwd(),
   });
@@ -90,45 +101,53 @@ async function openRemoteCodex() {
     return;
   }
 
+  const state = {
+    appServerUrl: remoteUrl,
+    appServerCommand,
+    pid: server.child?.pid,
+    cwd: process.cwd(),
+    workspaceLabel: config.activeWorkspace.label,
+    startedAt: new Date().toISOString(),
+  };
+  const statePath = saveRuntimeState(state);
+  console.log(`session: ${statePath}`);
+
   const codexArgs = argsAfterOptionalSeparator(process.argv, 3);
   const args = ['--remote', remoteUrl, ...codexArgs];
   const resolved = resolveExecutable('codex') ?? 'codex';
 
   console.log(`starting: ${formatCommandForLog('codex', args)}`);
 
-  const child = spawnCommand(resolved, args, {
-    cwd: process.cwd(),
-    stdio: 'inherit',
-  });
-  await new Promise((resolve) => {
-    child.on('error', (err) => {
-      console.error(formatRunError(err));
-      process.exitCode = 1;
-      resolve();
+  try {
+    const child = spawnCommand(resolved, args, {
+      cwd: process.cwd(),
+      stdio: 'inherit',
     });
-    child.on('close', (code) => {
-      process.exitCode = code ?? 0;
-      resolve();
+    await new Promise((resolve) => {
+      child.on('error', (err) => {
+        console.error(formatRunError(err));
+        process.exitCode = 1;
+        resolve();
+      });
+      child.on('close', (code) => {
+        process.exitCode = code ?? 0;
+        resolve();
+      });
     });
-  });
-  server.stop();
+  } finally {
+    clearRuntimeState(state);
+    server.stop();
+  }
 }
 
 async function startBot() {
   runtime = await ensureConfigured();
   API = `https://api.telegram.org/bot${runtime.token}`;
-  codexServer = new CodexAppServer({ command: runtime.appServerCommand, url: runtime.appServerUrl, cwd: runtime.cwd });
-  codexServer.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
-  codexServer.on('fatal', (err) => console.error('codex app-server error', err.message));
-  codexServer.on('request', (request) => handleCodexRequest(request).catch((err) => {
-    console.error('codex request handler error', err);
-    codexServer.respondError(request.id, -32000, err.message || String(err));
-  }));
 
   console.log(`morse ready. allowed=${runtime.allowedUserIds.join(',')} cwd=${runtime.cwd}`);
   console.log(`active workspace: ${runtime.workspaceLabel}`);
-  console.log(`codex app-server: ${runtime.appServerCommand}`);
-  console.log(`codex remote: codex --remote ${runtime.appServerUrl}`);
+  console.log(`session state: ${runtimeStatePath()}`);
+  console.log('open a Codex session with `morse codex` before sending work from Telegram.');
 
   let offset = 0;
   // eslint-disable-next-line no-constant-condition
@@ -186,10 +205,16 @@ function showStatus() {
   console.log(`status: configured (${current.source})`);
   console.log(`token: ${maskToken(current.token)}`);
   console.log(`allowed: ${current.allowedUserIds.join(',')}`);
-  console.log(`codex_app_server: ${current.appServerCommand}`);
-  console.log(`codex_remote: codex --remote ${current.appServerUrl}`);
   console.log(`active_project: ${current.workspaceLabel}`);
   console.log(`cwd: ${current.cwd}`);
+  console.log(`session: ${runtimeStatePath()}`);
+  const state = loadRuntimeState();
+  if (state?.appServerUrl) {
+    console.log('session_status: active');
+    console.log(`codex_remote: codex --remote ${state.appServerUrl}`);
+  } else {
+    console.log('session_status: none');
+  }
   if (config?.activeWorkspace?.enabledAt) console.log(`enabled_at: ${config.activeWorkspace.enabledAt}`);
 }
 
@@ -210,8 +235,9 @@ async function handleUpdate(update) {
 
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
-  if (!runtime.allowedUserIds.includes(userId)) {
-    console.log(`ignored message from unauthorized user ${userId} (${msg.from?.username})`);
+  const auth = authorizeTelegramPeer(runtime, { userId, chatId, chatType: msg.chat.type });
+  if (!auth.ok) {
+    console.log(`ignored message from ${userId} (${msg.from?.username}): ${auth.reason}`);
     return;
   }
   lastChatId = chatId;
@@ -287,6 +313,7 @@ function formatRunError(err) {
 async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
+  const server = await ensureCodexServer();
 
   let currentId = ackMessageId;
   let currentText = '';
@@ -323,7 +350,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   };
 
   try {
-    const result = await codexServer.relayTurn({
+    const result = await server.relayTurn({
       cwd: current.cwd,
       text: prompt,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
@@ -376,9 +403,50 @@ async function handleCodexRequest(request) {
   });
 }
 
+async function ensureCodexServer() {
+  const state = loadRuntimeState();
+  if (!state?.appServerUrl || !state?.appServerCommand) {
+    throw new Error('no active Codex remote. Run `morse codex` from the repo first and keep it open.');
+  }
+  if (state.pid && !isProcessAlive(state.pid)) {
+    clearRuntimeState(state);
+    throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
+  }
+
+  if (codexServer?.url === state.appServerUrl) return codexServer;
+
+  if (codexServer) codexServer.stop();
+  codexServer = new CodexAppServer({
+    command: state.appServerCommand,
+    url: state.appServerUrl,
+    cwd: state.cwd ?? runtime.cwd,
+    allowReuse: true,
+  });
+  codexServer.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
+  codexServer.on('fatal', (err) => console.error('codex app-server error', err.message));
+  codexServer.on('request', (request) => handleCodexRequest(request).catch((err) => {
+    console.error('codex request handler error', err);
+    codexServer.respondError(request.id, -32000, err.message || String(err));
+  }));
+  await codexServer.start();
+  return codexServer;
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleCallbackQuery(query) {
   const userId = query.from?.id;
-  if (!runtime.allowedUserIds.includes(userId)) {
+  const chatId = query.message?.chat?.id;
+  const chatType = query.message?.chat?.type;
+  const auth = authorizeTelegramPeer(runtime, { userId, chatId, chatType });
+  if (!auth.ok) {
     await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Not allowed.', show_alert: true });
     return;
   }
@@ -423,7 +491,7 @@ async function handleSlashCommandCallback(query) {
     return;
   }
 
-  const chatId = query.message?.chat?.id ?? lastChatId;
+  const chatId = query.message?.chat?.id;
   if (!chatId) {
     await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'No active chat.', show_alert: true });
     return;
@@ -467,6 +535,26 @@ async function tg(method, body) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function createLoopbackRemoteUrl() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' ? address.port : null;
+      server.close((err) => {
+        if (err) {
+          reject(err);
+        } else if (!port) {
+          reject(new Error('could not allocate a local port'));
+        } else {
+          resolve(`ws://127.0.0.1:${port}`);
+        }
+      });
+    });
+  });
 }
 
 function loadDotEnv(path) {

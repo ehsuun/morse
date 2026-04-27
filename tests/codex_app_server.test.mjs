@@ -97,3 +97,67 @@ test('handleJson emits server requests instead of treating them as responses', a
   assert.equal(request.method, 'item/commandExecution/requestApproval');
   assert.equal(request.params.command, 'npm test');
 });
+
+test('startWebSocket refuses existing servers by default', async () => {
+  const server = new CodexAppServer();
+  server.probeWebSocket = async () => true;
+  server.spawnAppServer = () => {
+    throw new Error('should not spawn');
+  };
+
+  await assert.rejects(() => server.startWebSocket(), /refusing to relay/);
+});
+
+test('startWebSocket can reuse an existing server when explicitly allowed', async () => {
+  const server = new CodexAppServer({ allowReuse: true });
+  let connected = false;
+  server.tryConnectWebSocket = async () => {
+    connected = true;
+    return true;
+  };
+  server.initialize = async () => {};
+  server.spawnAppServer = () => {
+    throw new Error('should not spawn');
+  };
+
+  await server.startWebSocket();
+
+  assert.equal(connected, true);
+  assert.equal(server.started, true);
+});
+
+test('startWebSocket reconnects to a live child this instance spawned', async () => {
+  const server = new CodexAppServer();
+  let connected = false;
+  server.child = { killed: false, exitCode: null, signalCode: null, kill: () => assert.fail('should not kill child') };
+  server.tryConnectWebSocket = async () => {
+    connected = true;
+    return true;
+  };
+  server.probeWebSocket = async () => assert.fail('should not probe owned child as foreign server');
+  server.initialize = async () => {};
+  server.spawnAppServer = () => assert.fail('should not spawn');
+
+  await server.startWebSocket();
+
+  assert.equal(connected, true);
+  assert.equal(server.started, true);
+});
+
+test('startWebSocket restarts an owned child if reconnect fails', async () => {
+  const server = new CodexAppServer();
+  let killed = false;
+  let spawned = false;
+  server.child = { killed: false, exitCode: null, signalCode: null, kill: () => { killed = true; } };
+  server.tryConnectWebSocket = async () => false;
+  server.probeWebSocket = async () => false;
+  server.spawnAppServer = () => { spawned = true; };
+  server.waitForWebSocket = async () => {};
+  server.initialize = async () => {};
+
+  await server.startWebSocket();
+
+  assert.equal(killed, true);
+  assert.equal(spawned, true);
+  assert.equal(server.started, true);
+});

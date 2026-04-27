@@ -37,9 +37,9 @@ export async function runSetup() {
     const cwdDefault = process.cwd();
     const cwd = (await ask(`workspace [${cwdDefault}]: `)).trim() || cwdDefault;
 
-    const userId = await detectUserId(token, bot.username, ask, confirm);
+    const { userId, chatId } = await detectUserId(token, bot.username, ask, confirm);
 
-    const configPath = writeGlobalConfig(token, userId, cwd);
+    const configPath = writeGlobalConfig(token, userId, chatId, cwd);
     console.log('');
     console.log('setup complete');
     console.log(`config: ${configPath}`);
@@ -52,7 +52,7 @@ export async function runSetup() {
     console.log('To switch repos later, run `morse enable` from that repo.');
     console.log('');
 
-    return { token, userId, cwd, botUsername: bot.username };
+    return { token, userId, chatId, cwd, botUsername: bot.username };
   } finally {
     rl.close();
   }
@@ -110,11 +110,16 @@ async function detectUserId(token, botUsername, ask, confirm) {
     const updates = await tg(token, 'getUpdates', { offset, timeout: 50 });
     for (const u of updates) {
       offset = u.update_id + 1;
-      const from = u.message?.from;
+      const msg = u.message;
+      const from = msg?.from;
       if (!from?.id) continue;
       const label = `${from.first_name ?? ''}${from.username ? ` (@${from.username})` : ''}`.trim() || '(no name)';
       console.log(`  message from ${label}, id ${from.id}`);
-      if (await confirm(`add ${from.id} to ALLOWED_USER_IDS?`, 'y')) return from.id;
+      if (msg.chat?.type !== 'private') {
+        console.log('  ignored because setup must be completed in a private chat with your bot.');
+        continue;
+      }
+      if (await confirm(`add ${from.id} to ALLOWED_USER_IDS?`, 'y')) return { userId: from.id, chatId: msg.chat.id };
       console.log('  skipped. waiting for another message...');
     }
   }
@@ -131,7 +136,7 @@ async function tg(token, method, body) {
   return json.result;
 }
 
-function writeGlobalConfig(token, userId, cwd) {
+function writeGlobalConfig(token, userId, chatId, cwd) {
   const path = globalConfigPath();
   if (existsSync(path)) {
     const backupPath = nextBackupPath(path, existsSync);
@@ -141,8 +146,7 @@ function writeGlobalConfig(token, userId, cwd) {
   saveGlobalConfig({
     telegramBotToken: token,
     allowedUserIds: [userId],
-    appServerUrl: 'ws://127.0.0.1:17373',
-    appServerCommand: 'codex app-server --listen ws://127.0.0.1:17373',
+    allowedChatIds: [chatId],
     timeoutSeconds: 600,
     streamDebounceMs: 1200,
     activeWorkspace: workspaceFromCwd(cwd),

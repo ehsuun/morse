@@ -1,16 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  clearRuntimeState,
   enableWorkspace,
   globalConfigPath,
   loadGlobalConfig,
+  loadRuntimeState,
   normalizeCodexCommand,
   runtimeFromEnv,
   runtimeFromGlobalConfig,
+  runtimeStatePath,
   saveGlobalConfig,
+  saveRuntimeState,
 } from '../config.mjs';
 
 function withMorseConfigPath(fn) {
@@ -35,11 +39,18 @@ test('globalConfigPath honors MORSE_CONFIG', () => {
   });
 });
 
+test('runtimeStatePath lives next to MORSE_CONFIG by default', () => {
+  withMorseConfigPath((path) => {
+    assert.equal(runtimeStatePath(), resolve(path, '..', 'state.json'));
+  });
+});
+
 test('saveGlobalConfig and loadGlobalConfig round trip config', () => {
   withMorseConfigPath((path) => {
     const config = {
       telegramBotToken: '1234567890:test',
       allowedUserIds: [42],
+      allowedChatIds: [123],
       activeWorkspace: { cwd: 'J:\\Projects\\morse', label: 'morse', enabledAt: 'now' },
     };
     saveGlobalConfig(config);
@@ -47,13 +58,44 @@ test('saveGlobalConfig and loadGlobalConfig round trip config', () => {
   });
 });
 
+test('saveRuntimeState and clearRuntimeState manage private session state', () => {
+  withMorseConfigPath(() => {
+    const state = {
+      appServerUrl: 'ws://127.0.0.1:49152',
+      appServerCommand: 'codex app-server --listen ws://127.0.0.1:49152',
+      pid: 123,
+    };
+    saveRuntimeState(state);
+    assert.deepEqual(loadRuntimeState(), state);
+    clearRuntimeState({ ...state, pid: 456 });
+    assert.deepEqual(loadRuntimeState(), state);
+    clearRuntimeState(state);
+    assert.equal(loadRuntimeState(), null);
+  });
+});
+
+test('saveGlobalConfig tightens existing config permissions on POSIX', { skip: process.platform === 'win32' }, () => {
+  withMorseConfigPath((path) => {
+    writeFileSync(path, '{}', { mode: 0o666 });
+    chmodSync(path, 0o644);
+    saveGlobalConfig({
+      telegramBotToken: '1234567890:test',
+      allowedUserIds: [42],
+      activeWorkspace: { cwd: 'J:\\Projects\\morse', label: 'morse', enabledAt: 'now' },
+    });
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  });
+});
+
 test('runtimeFromGlobalConfig uses active workspace and defaults', () => {
   const runtime = runtimeFromGlobalConfig({
     telegramBotToken: '1234567890:test',
     allowedUserIds: [42],
+    allowedChatIds: [123],
     activeWorkspace: { cwd: 'J:\\Projects\\morse', label: 'morse', enabledAt: 'now' },
   });
   assert.equal(runtime.source, 'global');
+  assert.deepEqual(runtime.allowedChatIds, [123]);
   assert.equal(runtime.codexCommand, 'codex resume --last');
   assert.equal(runtime.appServerUrl, 'ws://127.0.0.1:17373');
   assert.equal(runtime.appServerCommand, 'codex app-server --listen ws://127.0.0.1:17373');
@@ -65,11 +107,13 @@ test('runtimeFromEnv preserves legacy .env support', () => {
   const runtime = runtimeFromEnv({
     TELEGRAM_BOT_TOKEN: '1234567890:test',
     ALLOWED_USER_IDS: '42, 99',
+    ALLOWED_CHAT_IDS: '123, 456',
     CODEX_CMD: 'codex exec --fast',
     CODEX_CWD: 'J:\\Projects\\legacy',
   });
   assert.equal(runtime.source, 'env');
   assert.deepEqual(runtime.allowedUserIds, [42, 99]);
+  assert.deepEqual(runtime.allowedChatIds, [123, 456]);
   assert.equal(runtime.codexCommand, 'codex exec --fast');
   assert.equal(runtime.cwd, 'J:\\Projects\\legacy');
 });

@@ -6,6 +6,7 @@ export class CodexAppServer extends EventEmitter {
     command = 'codex app-server --listen ws://127.0.0.1:17373',
     url = 'ws://127.0.0.1:17373',
     cwd = process.cwd(),
+    allowReuse = false,
   } = {}) {
     super();
     this.command = command;
@@ -16,6 +17,7 @@ export class CodexAppServer extends EventEmitter {
     this.buffer = '';
     this.contentLength = null;
     this.started = false;
+    this.allowReuse = allowReuse;
   }
 
   async start() {
@@ -28,10 +30,19 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async startWebSocket() {
-    if (await this.tryConnectWebSocket()) {
+    const hasOwnedChild = this.hasLiveChild();
+
+    if ((this.allowReuse || hasOwnedChild) && await this.tryConnectWebSocket()) {
       this.started = true;
       await this.initialize();
       return;
+    }
+
+    if (hasOwnedChild) {
+      this.stopChild();
+      await this.waitForWebSocketClose();
+    } else if (!this.allowReuse && await this.probeWebSocket()) {
+      throw new Error(`refusing to relay through an existing app-server at ${this.url}`);
     }
 
     this.spawnAppServer();
@@ -88,8 +99,21 @@ export class CodexAppServer extends EventEmitter {
   }
 
   stop() {
-    if (this.child && !this.child.killed) this.child.kill('SIGTERM');
+    this.stopChild();
     if (this.ws) this.ws.close();
+  }
+
+  stopChild() {
+    if (this.hasLiveChild()) this.child.kill('SIGTERM');
+  }
+
+  hasLiveChild() {
+    return Boolean(
+      this.child
+        && !this.child.killed
+        && this.child.exitCode === null
+        && this.child.signalCode === null,
+    );
   }
 
   async tryConnectWebSocket() {
@@ -99,6 +123,26 @@ export class CodexAppServer extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  probeWebSocket() {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(this.url);
+      const timer = setTimeout(() => {
+        ws.close();
+        resolve(false);
+      }, 500);
+
+      ws.onopen = () => {
+        clearTimeout(timer);
+        ws.close();
+        resolve(true);
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+    });
   }
 
   async waitForWebSocket() {
@@ -115,6 +159,14 @@ export class CodexAppServer extends EventEmitter {
     throw lastError ?? new Error(`could not connect to Codex app-server at ${this.url}`);
   }
 
+  async waitForWebSocketClose() {
+    for (let i = 0; i < 20; i++) {
+      if (!await this.probeWebSocket()) return;
+      await sleep(100);
+    }
+    throw new Error(`owned Codex app-server at ${this.url} did not stop`);
+  }
+
   connectWebSocket() {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.url);
@@ -129,6 +181,7 @@ export class CodexAppServer extends EventEmitter {
         ws.onmessage = (event) => this.handleJson(String(event.data));
         ws.onerror = () => {};
         ws.onclose = () => {
+          if (this.ws === ws) this.ws = null;
           this.started = false;
           this.rejectAll(new Error(`Codex app-server websocket closed`));
         };
