@@ -106,8 +106,10 @@ async function openRemoteCodex() {
 
   console.log(`morse enabled for ${config.activeWorkspace.label}`);
   console.log(`starting shared remote: ${remoteUrl}`);
+  let thread;
   try {
     await server.start();
+    thread = await server.getOrCreateThread(process.cwd());
   } catch (err) {
     console.error(`could not start Codex remote: ${err.message}`);
     process.exitCode = 1;
@@ -118,6 +120,7 @@ async function openRemoteCodex() {
     appServerUrl: remoteUrl,
     appServerCommand,
     pid: server.child?.pid,
+    threadId: thread.id,
     cwd: process.cwd(),
     workspaceLabel: config.activeWorkspace.label,
     startedAt: new Date().toISOString(),
@@ -126,7 +129,7 @@ async function openRemoteCodex() {
   console.log(`session: ${statePath}`);
 
   const codexArgs = argsAfterOptionalSeparator(process.argv, 3);
-  const args = ['--remote', remoteUrl, ...codexArgs];
+  const args = codexArgsForSharedThread(remoteUrl, thread.id, codexArgs);
   const resolved = resolveExecutable('codex') ?? 'codex';
 
   console.log(`starting: ${formatCommandForLog('codex', args)}`);
@@ -445,7 +448,7 @@ function formatRunError(err) {
 async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
-  const server = await ensureCodexServer();
+  const { server, state } = await ensureCodexServer();
 
   let currentId = ackMessageId;
   let currentText = '';
@@ -485,6 +488,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
     const result = await server.relayTurn({
       cwd: current.cwd,
       text: prompt,
+      threadId: state.threadId,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
       onStarted: ({ threadId, turnId }) => {
         activeRun = { id: runId, threadId, turnId, chatId };
@@ -545,7 +549,7 @@ async function ensureCodexServer() {
     throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
   }
 
-  if (codexServer?.url === state.appServerUrl) return codexServer;
+  if (codexServer?.url === state.appServerUrl) return { server: codexServer, state };
 
   if (codexServer) codexServer.stop();
   codexServer = new CodexAppServer({
@@ -561,7 +565,7 @@ async function ensureCodexServer() {
     codexServer.respondError(request.id, -32000, err.message || String(err));
   }));
   await codexServer.start();
-  return codexServer;
+  return { server: codexServer, state };
 }
 
 function isProcessAlive(pid) {
@@ -687,6 +691,15 @@ function createLoopbackRemoteUrl() {
       });
     });
   });
+}
+
+function codexArgsForSharedThread(remoteUrl, threadId, rawArgs) {
+  const args = rawArgs.filter((arg) => arg !== '--resume');
+  if (args[0] === 'resume') {
+    if (args[1]) return ['--remote', remoteUrl, ...args];
+    return ['--remote', remoteUrl, 'resume', threadId, ...args.slice(1)];
+  }
+  return ['--remote', remoteUrl, ...args, 'resume', threadId];
 }
 
 function loadDotEnv(path) {

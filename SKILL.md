@@ -7,7 +7,7 @@ description: Help the user set up morse on their machine. Trigger when the user 
 
 The user is configuring their own Telegram -> Codex bridge. Morse should be installed globally and set up once.
 
-Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active `morse codex` session. `morse start` starts the Telegram bridge in the background; `morse codex` starts the bridge if needed, starts the per-run app-server on a random loopback port, and opens the terminal UI against it.
+Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active `morse codex` session. `morse start` starts the Telegram bridge in the background; `morse codex` starts the bridge if needed, starts the per-run app-server on a random loopback port, creates one shared Codex thread, and opens the terminal UI on that thread.
 
 Do not drive the interactive prompts yourself. The token paste and user-id confirmation are consent moments; if you type the token or acknowledgments, you have broken that.
 

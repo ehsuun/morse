@@ -81,6 +81,37 @@ test('getOrCreateThread resumes matching loaded threads so this client subscribe
   assert.deepEqual(calls.map((call) => call.method), ['thread/loaded/list', 'thread/read', 'thread/resume']);
 });
 
+test('relayTurn uses an explicit shared thread id when provided', async () => {
+  const server = new CodexAppServer();
+  server.start = async () => {};
+  server.resumeThread = async (threadId, cwd) => ({ id: threadId, cwd });
+  server.getOrCreateThread = async () => assert.fail('should not create a separate thread');
+  server.request = async (method, params) => {
+    if (method === 'turn/start') {
+      assert.equal(params.threadId, 'thread-shared');
+      server.emit('notification', {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-shared',
+          turn: { id: 'turn-1', status: 'completed' },
+        },
+      });
+      return { turn: { id: 'turn-1' } };
+    }
+    if (method === 'thread/read') return { thread: { turns: [] } };
+    throw new Error(`unexpected request: ${method}`);
+  };
+
+  const result = await server.relayTurn({
+    cwd: process.cwd(),
+    text: 'hi',
+    threadId: 'thread-shared',
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.threadId, 'thread-shared');
+});
+
 test('handleJson emits server requests instead of treating them as responses', async () => {
   const server = new CodexAppServer();
   const request = await new Promise((resolve) => {
