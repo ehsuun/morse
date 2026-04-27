@@ -529,11 +529,39 @@ async function attachmentsFromTelegramMessage(msg) {
       fallbackExt: extname(msg.document.file_name ?? '') || mimeImageExtension(msg.document.mime_type),
     });
   }
+  if (msg.voice) {
+    descriptors.push({
+      type: 'localFile',
+      label: 'Telegram voice message',
+      fileId: msg.voice.file_id,
+      uniqueId: msg.voice.file_unique_id,
+      fallbackExt: mimeAudioExtension(msg.voice.mime_type),
+    });
+  }
+  if (msg.audio) {
+    descriptors.push({
+      type: 'localFile',
+      label: 'Telegram audio file',
+      fileId: msg.audio.file_id,
+      uniqueId: msg.audio.file_unique_id,
+      fallbackExt: extname(msg.audio.file_name ?? '') || mimeAudioExtension(msg.audio.mime_type),
+    });
+  }
+  if (msg.document?.mime_type?.startsWith('audio/')) {
+    descriptors.push({
+      type: 'localFile',
+      label: 'Telegram audio document',
+      fileId: msg.document.file_id,
+      uniqueId: msg.document.file_unique_id,
+      fallbackExt: extname(msg.document.file_name ?? '') || mimeAudioExtension(msg.document.mime_type),
+    });
+  }
 
   const attachments = [];
   for (const descriptor of descriptors) {
     attachments.push({
-      type: 'localImage',
+      type: descriptor.type,
+      label: descriptor.label,
       path: await downloadTelegramFile(descriptor),
     });
   }
@@ -564,6 +592,14 @@ function mimeImageExtension(mimeType) {
   if (mimeType === 'image/webp') return '.webp';
   if (mimeType === 'image/gif') return '.gif';
   return '.jpg';
+}
+
+function mimeAudioExtension(mimeType) {
+  if (mimeType === 'audio/mpeg') return '.mp3';
+  if (mimeType === 'audio/mp4') return '.m4a';
+  if (mimeType === 'audio/wav' || mimeType === 'audio/x-wav') return '.wav';
+  if (mimeType === 'audio/webm') return '.webm';
+  return '.ogg';
 }
 
 async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems = null, sessionId = null) {
@@ -1075,7 +1111,7 @@ function helpText() {
     '  /whoami   show your user id, chat id, active project, and working directory',
     '  /cancel   abort the Codex relay currently in progress',
     '',
-    'photos and image documents are sent to Codex with the caption as the prompt.',
+    'photos and image documents are sent as image input; voice/audio files are sent as local file paths with the caption as the prompt.',
   ].join('\n');
 }
 

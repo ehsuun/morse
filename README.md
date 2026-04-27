@@ -15,7 +15,7 @@ What it does:
 - relays allowed Telegram messages into your active Codex terminal session
 - streams Codex replies back to Telegram
 - shows Codex approval prompts as Telegram buttons
-- sends Telegram photos and image documents to Codex as image input
+- sends Telegram photos and image documents as image input, and voice/audio messages as local file references
 - offers a small inline slash-command palette, including model selection
 - switches between active local Codex sessions from Telegram
 - keeps all morse state local
@@ -134,6 +134,7 @@ morse codex resume --last
 | `/cancel` | Interrupt the current Codex turn |
 | anything else | Send text to Codex |
 | photo / image document | Send the image to Codex, using the caption as the prompt |
+| voice / audio file | Download the audio and send Codex the local file path, using the caption as the prompt |
 
 Unknown slash commands are sent to Codex unchanged.
 
@@ -142,7 +143,7 @@ If Codex is busy, messages are queued and sent in order.
 If Codex asks for approval, morse sends Telegram buttons.
 If a non-active session asks for approval, morse switches the Telegram chat to that session before showing the prompt.
 
-Downloaded Telegram images are stored under the local morse config directory, in `media/`.
+Downloaded Telegram media is stored under the local morse config directory, in `media/`.
 
 ## Commands
 

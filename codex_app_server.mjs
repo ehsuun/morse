@@ -525,6 +525,7 @@ export function turnInputFromTextAndAttachments(text, attachments = []) {
     ...(String(text ?? '') ? [textInput(String(text))] : []),
     ...attachments.map((attachment) => {
       if (attachment.type === 'localImage') return { type: 'localImage', path: attachment.path };
+      if (attachment.type === 'localFile') return textInput(`${attachment.label ?? 'Attached file'} downloaded to: ${attachment.path}`);
       if (attachment.type === 'image') return { type: 'image', url: attachment.url };
       return attachment;
     }),
