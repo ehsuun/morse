@@ -142,6 +142,7 @@ Unknown slash commands are sent to Codex unchanged.
 If Codex is busy, messages are queued and sent in order.
 
 If Codex asks for approval, morse sends Telegram buttons.
+If a non-active session asks for approval, morse switches the Telegram chat to that session before showing the prompt.
 
 Downloaded Telegram images are stored under the local morse config directory, in `media/`.
 
@@ -154,7 +155,12 @@ morse stop               # stop the background Telegram bridge
 morse enable             # set current directory as active workspace
 morse codex [codex args] # open Codex on the shared local remote
 morse status             # print config and active workspace
+morse version            # print morse package version
 ```
+
+## Versioning
+
+Morse uses SemVer in `package.json`. Use `npm run version:patch`, `npm run version:minor`, or `npm run version:major` to bump the version without creating a git tag.
 
 ## Config
 

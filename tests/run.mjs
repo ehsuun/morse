@@ -6,3 +6,4 @@ import './websocket_proxy.test.mjs';
 import './approvals.test.mjs';
 import './slash_commands.test.mjs';
 import './session_state.test.mjs';
+import './package_info.test.mjs';

@@ -35,6 +35,7 @@ import {
   saveRuntimeState,
 } from './config.mjs';
 import { CodexAppServer, turnInputFromTextAndAttachments } from './codex_app_server.mjs';
+import { packageVersion } from './package_info.mjs';
 import {
   isSlashPaletteRequest,
   modelChoiceById,
@@ -71,6 +72,7 @@ let nextRunId = 1;
 let nextApprovalId = 1;
 let lastChatId = null;
 const pendingApprovals = new Map();
+const promptSessions = new Map();
 const queuedRuns = [];
 let queueDraining = false;
 
@@ -94,6 +96,8 @@ async function main() {
     await openRemoteCodex();
   } else if (command === 'status') {
     showStatus();
+  } else if (command === 'version' || command === '--version' || command === '-v') {
+    console.log(packageVersion());
   } else if (command === 'help' || command === '--help' || command === '-h') {
     console.log(cliHelpText());
   } else {
@@ -461,14 +465,15 @@ async function handleUpdate(update) {
   }
 
   const inputItems = attachments.length ? turnInputFromTextAndAttachments(text, attachments) : null;
-  await enqueueRun(text, chatId, inputItems);
+  await enqueueRun(text, chatId, inputItems, sessionIdForPromptReply(msg));
 }
 
-async function enqueueRun(text, chatId, inputItems = null) {
+async function enqueueRun(text, chatId, inputItems = null, sessionId = null) {
   const runId = nextRunId++;
   const queued = activeRun || queueDraining || queuedRuns.length > 0;
   const ack = await send(chatId, queued ? `queued (${queuedRuns.length + 1} ahead)` : 'working...');
-  const session = activeSessionForChat(chatId, liveSessionRegistry());
+  const registry = liveSessionRegistry();
+  const session = sessionId ? sessionById(sessionId, registry) : activeSessionForChat(chatId, registry);
   queuedRuns.push({ id: runId, text, inputItems, chatId, sessionId: session?.id ?? null, ackMessageId: ack.message_id });
   drainQueue().catch((err) => console.error('queue drain error', err));
 }
@@ -565,6 +570,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
   const state = await waitForActiveCodexThread(chatId, sessionId);
+  upsertSession({ ...state, status: 'running', waitingReason: null, waitingSince: null });
   const server = await ensureCodexServer(state);
   console.log(`run ${runId}: relaying to thread ${state.activeThreadId} via ${state.proxyUrl ?? state.appServerUrl}`);
 
@@ -620,6 +626,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
   } finally {
     if (pending) clearTimeout(pending);
     if (activeRun?.id === runId) activeRun = null;
+    upsertSession({ ...state, status: 'idle', waitingReason: null, waitingSince: null });
   }
   await flush();
 
@@ -634,26 +641,45 @@ async function handleCodexRequest(request) {
     codexServer.respondError(request.id, -32000, 'morse has no Telegram chat to request approval from');
     return;
   }
+  const session = sessionForActiveRequest(chatId);
 
   if (!isApprovalRequest(request.method)) {
-    await send(chatId, `Codex requested unsupported client action:\n${request.method}`);
+    if (session) setChatActiveSession(chatId, session.id);
+    const message = await send(chatId, [
+      session ? actionPromptMessage(session, true, 'input', request.method) : 'Codex requested unsupported client action.',
+      !session ? request.method : null,
+    ].filter(Boolean).join('\n'), session ? { reply_markup: { force_reply: true } } : {});
+    if (session) promptSessions.set(promptSessionKey(chatId, message.message_id), session.id);
     codexServer.respondError(request.id, -32601, `unsupported request: ${request.method}`);
     return;
   }
 
+  const previous = activeSessionForChat(chatId, loadSessionRegistry());
+  const switched = session?.id && previous?.id !== session.id;
+  if (session) {
+    setChatActiveSession(chatId, session.id);
+    upsertSession({
+      ...session,
+      status: 'waiting',
+      waitingReason: 'approval',
+      waitingSince: new Date().toISOString(),
+    });
+  }
   const approvalId = String(nextApprovalId++);
   const keyboard = approvalKeyboard(request.method).map((row) => row.map((button) => ({
     text: button.text,
     callback_data: `ap:${approvalId}:${button.callback_data}`,
   })));
-  const message = await send(chatId, approvalMessage(request.method, request.params), {
+  const message = await send(chatId, actionPromptMessage(session, switched, 'approval', approvalMessage(request.method, request.params)), {
     reply_markup: { inline_keyboard: keyboard },
   });
+  if (session) promptSessions.set(promptSessionKey(chatId, message.message_id), session.id);
 
   pendingApprovals.set(approvalId, {
     request,
     chatId,
     messageId: message.message_id,
+    sessionId: session?.id ?? null,
     createdAt: Date.now(),
   });
 }
@@ -739,6 +765,32 @@ function isTelegramCommand(text, expected) {
   return command?.split('@', 1)[0] === expected;
 }
 
+function sessionForActiveRequest(chatId) {
+  const registry = liveSessionRegistry();
+  if (activeRun?.sessionId) return sessionById(activeRun.sessionId, registry);
+  return activeSessionForChat(chatId, registry);
+}
+
+function promptSessionKey(chatId, messageId) {
+  return `${chatId}:${messageId}`;
+}
+
+function sessionIdForPromptReply(msg) {
+  const repliedTo = msg.reply_to_message?.message_id;
+  if (!repliedTo) return null;
+  return promptSessions.get(promptSessionKey(msg.chat.id, repliedTo)) ?? null;
+}
+
+function actionPromptMessage(session, switched, kind, body) {
+  if (!session) return body;
+  return [
+    `${sessionLabel(session)} needs ${kind}.`,
+    switched ? `Switched active session to ${sessionLabel(session)}.` : `Active session: ${sessionLabel(session)}.`,
+    '',
+    body,
+  ].join('\n');
+}
+
 async function handleCallbackQuery(query) {
   const userId = query.from?.id;
   const chatId = query.message?.chat?.id;
@@ -776,6 +828,12 @@ async function handleCallbackQuery(query) {
   }
 
   pendingApprovals.delete(approvalId);
+  if (approval.sessionId) {
+    setChatActiveSession(approval.chatId, approval.sessionId);
+    const session = sessionById(approval.sessionId);
+    if (session) upsertSession({ ...session, status: 'running', waitingReason: null, waitingSince: null });
+    promptSessions.delete(promptSessionKey(approval.chatId, approval.messageId));
+  }
   const result = approvalResponse(approval.request.method, approval.request.params, action);
   codexServer.respond(approval.request.id, result);
 
@@ -902,7 +960,7 @@ function sessionsMessage(registry, chatId) {
     '',
     ...sessions.map((session) => {
       const marker = session.id === active?.id ? '*' : ' ';
-      return `${marker} ${sessionLabel(session)} (${session.id})`;
+      return `${marker} ${sessionListLabel(session)} (${session.id})`;
     }),
   ].join('\n');
 }
@@ -910,18 +968,24 @@ function sessionsMessage(registry, chatId) {
 function sessionChoiceKeyboard(registry, chatId) {
   const active = activeSessionForChat(chatId, registry);
   return sessionsByRecent(registry).map((session) => [{
-    text: `${session.id === active?.id ? '* ' : ''}${shortButtonLabel(session)} (${session.id})`,
+    text: `${session.id === active?.id ? '* ' : ''}${shortButtonLabel(sessionListLabel(session))} (${session.id})`,
     callback_data: `sess:${session.id}`,
   }]);
 }
 
-function shortButtonLabel(session) {
-  const label = sessionLabel(session);
+function shortButtonLabel(label) {
   return label.length > 40 ? `${label.slice(0, 37)}...` : label;
 }
 
 function sessionLabel(session) {
   return session.label ?? session.workspaceLabel ?? session.cwd ?? 'session';
+}
+
+function sessionListLabel(session) {
+  if (session.status === 'waiting') {
+    return `! ${sessionLabel(session)} needs ${session.waitingReason ?? 'input'}`;
+  }
+  return sessionLabel(session);
 }
 
 function isApprovalRequest(method) {
@@ -1027,5 +1091,6 @@ function cliHelpText() {
     '  morse codex [codex args]',
     '                 enable this repo and open Codex on the shared remote',
     '  morse status   show setup and active workspace',
+    '  morse version  print morse package version',
   ].join('\n');
 }
