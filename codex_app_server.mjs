@@ -194,9 +194,9 @@ export class CodexAppServer extends EventEmitter {
     });
   }
 
-  async relayTurn({ cwd, text, threadId, onStarted, onDelta, timeoutMs = 600000 }) {
+  async relayTurn({ cwd, text, onStarted, onDelta, timeoutMs = 600000 }) {
     await this.start();
-    const thread = threadId ? await this.resumeThread(threadId, cwd) : await this.getOrCreateThread(cwd);
+    const thread = await this.getOrCreateThread(cwd);
     let output = '';
     let turnId = null;
     const agentItemText = new Map();
@@ -308,11 +308,6 @@ export class CodexAppServer extends EventEmitter {
   async interrupt(threadId, turnId) {
     await this.start();
     return await this.request('turn/interrupt', { threadId, turnId });
-  }
-
-  async resumeThread(threadId, cwd) {
-    const resumed = await this.request('thread/resume', { threadId, cwd });
-    return resumed.thread ?? { id: threadId, cwd };
   }
 
   async getOrCreateThread(cwd) {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   argsAfterOptionalSeparator,
+  codexArgsForRemote,
   commandSpawnSpec,
   formatCommandForLog,
   nextBackupPath,
@@ -131,4 +132,38 @@ test('formatCommandForLog quotes whitespace args', () => {
 test('argsAfterOptionalSeparator supports direct and -- pass-through', () => {
   assert.deepEqual(argsAfterOptionalSeparator(['node', 'bot.mjs', 'codex', '--resume'], 3), ['--resume']);
   assert.deepEqual(argsAfterOptionalSeparator(['node', 'bot.mjs', 'codex', '--', '--resume'], 3), ['--resume']);
+});
+
+test('codexArgsForRemote defaults to the last interactive session', () => {
+  assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', []), [
+    '--remote',
+    'ws://127.0.0.1:1234',
+    'resume',
+    '--last',
+  ]);
+});
+
+test('codexArgsForRemote maps --resume alias to resume --last', () => {
+  assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', ['--model', 'gpt-5.2', '--resume']), [
+    '--remote',
+    'ws://127.0.0.1:1234',
+    '--model',
+    'gpt-5.2',
+    'resume',
+    '--last',
+  ]);
+});
+
+test('codexArgsForRemote preserves explicit commands and prompts', () => {
+  assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', ['resume', 'abc']), [
+    '--remote',
+    'ws://127.0.0.1:1234',
+    'resume',
+    'abc',
+  ]);
+  assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', ['hello codex']), [
+    '--remote',
+    'ws://127.0.0.1:1234',
+    'hello codex',
+  ]);
 });

@@ -127,6 +127,13 @@ export function argsAfterOptionalSeparator(argv, startIndex) {
   return args[0] === '--' ? args.slice(1) : args;
 }
 
+export function codexArgsForRemote(remoteUrl, rawArgs) {
+  const args = rawArgs.filter((arg) => arg !== '--resume');
+  const hadResumeAlias = args.length !== rawArgs.length;
+  if (hadResumeAlias || hasOnlyOptions(args)) return ['--remote', remoteUrl, ...args, 'resume', '--last'];
+  return ['--remote', remoteUrl, ...args];
+}
+
 function resolveFromPath(bin, env, platform) {
   const pathValue = env.PATH || env.Path || '';
   const pathExts = platform === 'win32'
@@ -141,6 +148,41 @@ function resolveFromPath(bin, env, platform) {
     }
   }
   return null;
+}
+
+function hasOnlyOptions(args) {
+  if (args.length === 0) return true;
+  const optionsWithValues = new Set([
+    '-a',
+    '--add-dir',
+    '--ask-for-approval',
+    '-c',
+    '--cd',
+    '--config',
+    '--disable',
+    '--enable',
+    '-i',
+    '--image',
+    '-m',
+    '--model',
+    '--local-provider',
+    '-p',
+    '--profile',
+    '--remote-auth-token-env',
+    '-s',
+    '--sandbox',
+  ]);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return false;
+    if (arg.startsWith('-')) {
+      const name = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+      if (optionsWithValues.has(name) && !arg.includes('=')) i++;
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 function findWindowsCodex(env) {

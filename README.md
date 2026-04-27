@@ -90,13 +90,13 @@ In a repo:
 morse codex
 ```
 
-This marks the repo active, starts a per-run local Codex app-server on a random loopback port, creates one shared Codex thread, and opens Codex against it:
+This marks the repo active, starts a per-run local Codex app-server on a random loopback port, and opens Codex against it:
 
 ```bash
-codex --remote ws://127.0.0.1:<port>
+codex --remote ws://127.0.0.1:<port> resume --last
 ```
 
-Telegram messages are relayed into that same Codex thread. When `morse codex` exits, the session file is removed and the local app-server is stopped.
+Telegram messages are relayed into that active Codex app-server thread. When `morse codex` exits, the session file is removed and the local app-server is stopped.
 
 To switch repos without opening Codex:
 
