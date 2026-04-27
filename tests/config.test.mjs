@@ -13,13 +13,16 @@ import {
   loadBridgeState,
   loadGlobalConfig,
   loadRuntimeState,
+  loadSessionsState,
   normalizeCodexCommand,
   runtimeFromEnv,
   runtimeFromGlobalConfig,
   runtimeStatePath,
+  saveSessionsState,
   saveBridgeState,
   saveGlobalConfig,
   saveRuntimeState,
+  sessionsStatePath,
 } from '../config.mjs';
 
 function withMorseConfigPath(fn) {
@@ -54,6 +57,12 @@ test('bridge paths live next to MORSE_CONFIG by default', () => {
   withMorseConfigPath((path) => {
     assert.equal(bridgeStatePath(), resolve(path, '..', 'bridge.json'));
     assert.equal(bridgeLogPath(), resolve(path, '..', 'bridge.log'));
+  });
+});
+
+test('sessionsStatePath lives next to MORSE_CONFIG by default', () => {
+  withMorseConfigPath((path) => {
+    assert.equal(sessionsStatePath(), resolve(path, '..', 'sessions.json'));
   });
 });
 
@@ -111,6 +120,17 @@ test('saveBridgeState and clearBridgeState manage private bridge state', () => {
     assert.deepEqual(loadBridgeState(), state);
     clearBridgeState(state);
     assert.equal(loadBridgeState(), null);
+  });
+});
+
+test('saveSessionsState and loadSessionsState round trip session registry', () => {
+  withMorseConfigPath(() => {
+    const state = {
+      sessions: [{ id: 'abc12345', label: 'morse' }],
+      chats: { 123: { activeSessionId: 'abc12345' } },
+    };
+    saveSessionsState(state);
+    assert.deepEqual(loadSessionsState(), state);
   });
 });
 

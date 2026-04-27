@@ -7,6 +7,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, existsSync, writeFileSync
 import { createServer } from 'node:net';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { runSetup } from './setup.mjs';
 import { approvalActionLabel, approvalKeyboard, approvalMessage, approvalResponse } from './approvals.mjs';
 import {
@@ -43,6 +44,16 @@ import {
   slashCommandKeyboard,
   slashCommandMessage,
 } from './slash_commands.mjs';
+import {
+  activeSessionForChat,
+  loadSessionRegistry,
+  pruneSessions,
+  removeSession,
+  sessionsByRecent,
+  setChatActiveSession,
+  sessionById,
+  upsertSession,
+} from './session_state.mjs';
 import { authorizeTelegramPeer } from './telegram_auth.mjs';
 import { CodexWebSocketProxy } from './websocket_proxy.mjs';
 
@@ -138,12 +149,15 @@ async function openRemoteCodex() {
     return;
   }
 
+  const sessionId = createSessionId();
   const state = {
+    id: sessionId,
     appServerUrl: remoteUrl,
     appServerCommand,
     proxyUrl,
     pid: server.child?.pid,
     cwd: process.cwd(),
+    label: config.activeWorkspace.label,
     workspaceLabel: config.activeWorkspace.label,
     startedAt: new Date().toISOString(),
   };
@@ -151,10 +165,14 @@ async function openRemoteCodex() {
     if (state.activeThreadId === threadId) return;
     state.activeThreadId = threadId;
     state.activeThreadUpdatedAt = new Date().toISOString();
+    state.updatedAt = state.activeThreadUpdatedAt;
     saveRuntimeState(state);
+    upsertSession(state);
   });
   const statePath = saveRuntimeState(state);
+  upsertSession(state);
   console.log(`session: ${statePath}`);
+  console.log(`session_id: ${sessionId}`);
 
   const codexArgs = argsAfterOptionalSeparator(process.argv, 3);
   const args = codexArgsForRemote(proxyUrl, codexArgs);
@@ -180,6 +198,7 @@ async function openRemoteCodex() {
     });
   } finally {
     clearRuntimeState(state);
+    removeSession(sessionId);
     proxy.close();
     server.stop();
   }
@@ -422,6 +441,10 @@ async function handleUpdate(update) {
     });
     return;
   }
+  if (!attachments.length && isTelegramCommand(text, '/sessions')) {
+    await sendSessionsMessage(chatId);
+    return;
+  }
   if (!attachments.length && text === '/whoami') {
     const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
     await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\nactive_project: ${current.workspaceLabel}\ncwd: ${current.cwd}`);
@@ -445,7 +468,8 @@ async function enqueueRun(text, chatId, inputItems = null) {
   const runId = nextRunId++;
   const queued = activeRun || queueDraining || queuedRuns.length > 0;
   const ack = await send(chatId, queued ? `queued (${queuedRuns.length + 1} ahead)` : 'working...');
-  queuedRuns.push({ id: runId, text, inputItems, chatId, ackMessageId: ack.message_id });
+  const session = activeSessionForChat(chatId, liveSessionRegistry());
+  queuedRuns.push({ id: runId, text, inputItems, chatId, sessionId: session?.id ?? null, ackMessageId: ack.message_id });
   drainQueue().catch((err) => console.error('queue drain error', err));
 }
 
@@ -456,7 +480,7 @@ async function drainQueue() {
     while (queuedRuns.length > 0) {
       const run = queuedRuns.shift();
       try {
-        await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id, run.inputItems);
+        await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id, run.inputItems, run.sessionId);
       } catch (err) {
         console.error(`run ${run.id} failed: ${formatRunError(err)}`);
         await tg('editMessageText', {
@@ -537,10 +561,10 @@ function mimeImageExtension(mimeType) {
   return '.jpg';
 }
 
-async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems = null) {
+async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems = null, sessionId = null) {
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
-  const state = await waitForActiveCodexThread();
+  const state = await waitForActiveCodexThread(chatId, sessionId);
   const server = await ensureCodexServer(state);
   console.log(`run ${runId}: relaying to thread ${state.activeThreadId} via ${state.proxyUrl ?? state.appServerUrl}`);
 
@@ -586,7 +610,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
       threadId: state.activeThreadId,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
       onStarted: ({ threadId, turnId }) => {
-        activeRun = { id: runId, threadId, turnId, chatId };
+        activeRun = { id: runId, threadId, turnId, chatId, sessionId: state.id ?? sessionId };
       },
       onDelta: (delta) => {
         currentText += delta.replace(ANSI_RE, '');
@@ -634,10 +658,10 @@ async function handleCodexRequest(request) {
   });
 }
 
-async function waitForActiveCodexThread(timeoutMs = 20000) {
+async function waitForActiveCodexThread(chatId, sessionId = null, timeoutMs = 20000) {
   const started = Date.now();
   while (true) {
-    const state = loadRuntimeState();
+    const state = activeRuntimeStateForChat(chatId, sessionId);
     if (!state?.appServerUrl || !state?.appServerCommand) {
       throw new Error('no active Codex remote. Run `morse codex` from the repo first and keep it open.');
     }
@@ -691,6 +715,30 @@ function isProcessAlive(pid) {
   }
 }
 
+function activeRuntimeStateForChat(chatId, sessionId = null) {
+  const registry = liveSessionRegistry();
+  if (sessionId) return sessionById(sessionId, registry);
+  return activeSessionForChat(chatId, registry) ?? loadRuntimeState();
+}
+
+function liveSessionRegistry() {
+  return pruneSessions((session) => !session.pid || isProcessAlive(session.pid));
+}
+
+function createSessionId() {
+  const existing = new Set(loadSessionRegistry().sessions.map((session) => session.id));
+  for (let i = 0; i < 10; i += 1) {
+    const id = randomUUID().replace(/-/g, '').slice(0, 8);
+    if (!existing.has(id)) return id;
+  }
+  return randomUUID().replace(/-/g, '');
+}
+
+function isTelegramCommand(text, expected) {
+  const command = String(text ?? '').trim().split(/\s+/, 1)[0]?.toLowerCase();
+  return command?.split('@', 1)[0] === expected;
+}
+
 async function handleCallbackQuery(query) {
   const userId = query.from?.id;
   const chatId = query.message?.chat?.id;
@@ -708,6 +756,10 @@ async function handleCallbackQuery(query) {
   }
   if (String(query.data ?? '').startsWith('model:')) {
     await handleModelChoiceCallback(query);
+    return;
+  }
+  if (String(query.data ?? '').startsWith('sess:')) {
+    await handleSessionChoiceCallback(query);
     return;
   }
 
@@ -801,6 +853,77 @@ async function handleModelChoiceCallback(query) {
   await enqueueRun(model.command, chatId);
 }
 
+async function sendSessionsMessage(chatId) {
+  const registry = liveSessionRegistry();
+  const keyboard = sessionChoiceKeyboard(registry, chatId);
+  const extra = keyboard.length ? { reply_markup: { inline_keyboard: keyboard } } : {};
+  await send(chatId, sessionsMessage(registry, chatId), extra);
+}
+
+async function handleSessionChoiceCallback(query) {
+  const sessionId = String(query.data ?? '').slice('sess:'.length);
+  const chatId = query.message?.chat?.id;
+  if (!chatId) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'No active chat.', show_alert: true });
+    return;
+  }
+
+  const registry = liveSessionRegistry();
+  const session = sessionById(sessionId, registry);
+  if (!session) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Session not found.', show_alert: true });
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      text: sessionsMessage(registry, chatId),
+      reply_markup: { inline_keyboard: sessionChoiceKeyboard(registry, chatId) },
+    });
+    return;
+  }
+
+  setChatActiveSession(chatId, session.id);
+  const nextRegistry = loadSessionRegistry();
+  await tg('answerCallbackQuery', { callback_query_id: query.id, text: `Active: ${sessionLabel(session)}` });
+  await tg('editMessageText', {
+    chat_id: chatId,
+    message_id: query.message.message_id,
+    text: sessionsMessage(nextRegistry, chatId),
+    reply_markup: { inline_keyboard: sessionChoiceKeyboard(nextRegistry, chatId) },
+  });
+  await send(chatId, `Active session: ${sessionLabel(session)} (${session.id})`);
+}
+
+function sessionsMessage(registry, chatId) {
+  const sessions = sessionsByRecent(registry);
+  if (!sessions.length) return 'No active Codex sessions. Run `morse codex` from a repo first.';
+  const active = activeSessionForChat(chatId, registry);
+  return [
+    'Codex sessions',
+    '',
+    ...sessions.map((session) => {
+      const marker = session.id === active?.id ? '*' : ' ';
+      return `${marker} ${sessionLabel(session)} (${session.id})`;
+    }),
+  ].join('\n');
+}
+
+function sessionChoiceKeyboard(registry, chatId) {
+  const active = activeSessionForChat(chatId, registry);
+  return sessionsByRecent(registry).map((session) => [{
+    text: `${session.id === active?.id ? '* ' : ''}${shortButtonLabel(session)} (${session.id})`,
+    callback_data: `sess:${session.id}`,
+  }]);
+}
+
+function shortButtonLabel(session) {
+  const label = sessionLabel(session);
+  return label.length > 40 ? `${label.slice(0, 37)}...` : label;
+}
+
+function sessionLabel(session) {
+  return session.label ?? session.workspaceLabel ?? session.cwd ?? 'session';
+}
+
 function isApprovalRequest(method) {
   return [
     'item/commandExecution/requestApproval',
@@ -884,6 +1007,7 @@ function helpText() {
     'commands:',
     '  /help     this message',
     '  /slash    show Codex slash-command buttons',
+    '  /sessions list and switch active Codex sessions',
     '  /whoami   show your user id, chat id, active project, and working directory',
     '  /cancel   abort the Codex relay currently in progress',
     '',

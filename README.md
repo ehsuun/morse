@@ -17,6 +17,7 @@ What it does:
 - shows Codex approval prompts as Telegram buttons
 - sends Telegram photos and image documents to Codex as image input
 - offers a small inline slash-command palette, including model selection
+- switches between active local Codex sessions from Telegram
 - keeps all morse state local
 
 ## Install
@@ -130,6 +131,7 @@ morse codex resume --last
 | `/help`, `/start` | Show morse help |
 | `/slash`, `/commands`, `slash` | Show Codex slash-command buttons |
 | Model button in `/slash` | Choose a model from inline buttons |
+| `/sessions` | List active Codex sessions and switch with inline buttons |
 | `/whoami` | Show user id, chat id, active project, and cwd |
 | `/cancel` | Interrupt the current Codex turn |
 | anything else | Send text to Codex |

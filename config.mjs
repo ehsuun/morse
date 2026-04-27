@@ -27,6 +27,11 @@ export function bridgeLogPath() {
   return resolve(dirname(globalConfigPath()), 'bridge.log');
 }
 
+export function sessionsStatePath() {
+  if (process.env.MORSE_SESSIONS_STATE) return resolve(process.env.MORSE_SESSIONS_STATE);
+  return resolve(dirname(globalConfigPath()), 'sessions.json');
+}
+
 export function loadGlobalConfig(path = globalConfigPath()) {
   if (!existsSync(path)) return null;
   return readJson(path);
@@ -42,6 +47,11 @@ export function loadBridgeState(path = bridgeStatePath()) {
   return readJson(path);
 }
 
+export function loadSessionsState(path = sessionsStatePath()) {
+  if (!existsSync(path)) return null;
+  return readJson(path);
+}
+
 export function saveGlobalConfig(config, path = globalConfigPath()) {
   return savePrivateJson(config, path);
 }
@@ -51,6 +61,10 @@ export function saveRuntimeState(state, path = runtimeStatePath()) {
 }
 
 export function saveBridgeState(state, path = bridgeStatePath()) {
+  return savePrivateJson(state, path);
+}
+
+export function saveSessionsState(state, path = sessionsStatePath()) {
   return savePrivateJson(state, path);
 }
 
