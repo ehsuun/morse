@@ -1,15 +1,44 @@
 {
-  "name": "morse",
-  "version": "0.0.1",
-  "private": true,
+  "name": "morse-bridge",
+  "version": "0.1.0",
   "description": "Minimal Telegram bot that lets you chat with the Codex CLI on your own machine. Bring your own bot token, run locally.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ehsuun/morse.git"
+  },
+  "homepage": "https://github.com/ehsuun/morse#readme",
+  "bugs": {
+    "url": "https://github.com/ehsuun/morse/issues"
+  },
+  "keywords": [
+    "telegram",
+    "agent",
+    "codex",
+    "cli",
+    "local-first"
+  ],
   "engines": {
     "node": ">=20"
   },
   "bin": {
     "morse": "./bot.mjs"
   },
+  "files": [
+    ".env.example",
+    "approvals.mjs",
+    "bot.mjs",
+    "codex_app_server.mjs",
+    "config.mjs",
+    "helpers.mjs",
+    "morse.png",
+    "package_info.mjs",
+    "session_state.mjs",
+    "setup.mjs",
+    "slash_commands.mjs",
+    "telegram_auth.mjs",
+    "websocket_proxy.mjs"
+  ],
   "scripts": {
     "enable": "node bot.mjs enable",
     "start": "node bot.mjs",
@@ -19,6 +48,9 @@
     "version:patch": "npm version patch --no-git-tag-version",
     "version:minor": "npm version minor --no-git-tag-version",
     "version:major": "npm version major --no-git-tag-version"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT"
 }

@@ -23,9 +23,7 @@ What it does:
 ## Install
 
 ```bash
-git clone https://github.com/ehsuun/morse.git
-cd morse
-npm install -g .
+npm install -g morse-bridge
 ```
 
 Requirements:
@@ -193,7 +191,7 @@ Legacy `.env` config is still read as a fallback.
 - Morse is not a same-user sandbox: local processes running as your OS user can generally inspect local state and loopback ports.
 - Codex approval and sandbox behavior still apply.
 - One `morse start` process should poll a bot token at a time.
-- This is not an npm package yet. Install from the checkout.
+- The npm package is `morse-bridge`; the installed CLI is `morse`.
 
 ## Development
 
