@@ -93,10 +93,10 @@ morse codex
 This marks the repo active, starts a per-run local Codex app-server on a random loopback port, and opens Codex through a local proxy:
 
 ```bash
-codex --remote ws://127.0.0.1:<port> resume --last
+codex --remote ws://127.0.0.1:<port>
 ```
 
-The proxy records the thread id used by the Codex terminal. Telegram messages are sent to that same thread. When `morse codex` exits, the session file is removed and the local app-server is stopped.
+The proxy records the thread id used by the Codex terminal. Telegram messages are sent through the proxy so the terminal and Telegram see the same turn. When `morse codex` exits, the session file is removed and the local app-server is stopped.
 
 To switch repos without opening Codex:
 
@@ -109,6 +109,7 @@ Codex args pass through:
 ```bash
 morse codex --resume
 morse codex --model gpt-5.2
+morse codex resume --last
 ```
 
 ## Telegram

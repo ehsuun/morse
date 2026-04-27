@@ -590,12 +590,13 @@ async function ensureCodexServer(state = loadRuntimeState()) {
     throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
   }
 
-  if (codexServer?.url === state.appServerUrl) return codexServer;
+  const relayUrl = state.proxyUrl ?? state.appServerUrl;
+  if (codexServer?.url === relayUrl) return codexServer;
 
   if (codexServer) codexServer.stop();
   codexServer = new CodexAppServer({
     command: state.appServerCommand,
-    url: state.appServerUrl,
+    url: relayUrl,
     cwd: state.cwd ?? runtime.cwd,
     allowReuse: true,
   });

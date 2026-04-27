@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observeClientMessage, observeServerMessage } from '../websocket_proxy.mjs';
+import { isServerNotification, observeClientMessage, observeServerMessage } from '../websocket_proxy.mjs';
 
 test('observeClientMessage waits for resume responses and detects turn requests', () => {
   assert.equal(
@@ -57,4 +57,22 @@ test('observeServerMessage detects active thread notifications', () => {
     })),
     'thread-terminal',
   );
+});
+
+test('isServerNotification identifies broadcastable server notifications', () => {
+  assert.equal(isServerNotification(JSON.stringify({
+    method: 'item/agentMessage/delta',
+    params: { threadId: 'thread-terminal', turnId: 'turn-1', delta: 'hi' },
+  })), true);
+  assert.equal(isServerNotification(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 2,
+    result: { turn: { id: 'turn-1' } },
+  })), false);
+  assert.equal(isServerNotification(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'approval-1',
+    method: 'item/commandExecution/requestApproval',
+    params: {},
+  })), false);
 });

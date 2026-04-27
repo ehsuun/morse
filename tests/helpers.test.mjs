@@ -134,12 +134,10 @@ test('argsAfterOptionalSeparator supports direct and -- pass-through', () => {
   assert.deepEqual(argsAfterOptionalSeparator(['node', 'bot.mjs', 'codex', '--', '--resume'], 3), ['--resume']);
 });
 
-test('codexArgsForRemote defaults to the last interactive session', () => {
+test('codexArgsForRemote defaults to a fresh interactive session in the current cwd', () => {
   assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', []), [
     '--remote',
     'ws://127.0.0.1:1234',
-    'resume',
-    '--last',
   ]);
 });
 
@@ -165,5 +163,11 @@ test('codexArgsForRemote preserves explicit commands and prompts', () => {
     '--remote',
     'ws://127.0.0.1:1234',
     'hello codex',
+  ]);
+  assert.deepEqual(codexArgsForRemote('ws://127.0.0.1:1234', ['--model', 'gpt-5.2']), [
+    '--remote',
+    'ws://127.0.0.1:1234',
+    '--model',
+    'gpt-5.2',
   ]);
 });

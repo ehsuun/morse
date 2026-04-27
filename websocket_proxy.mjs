@@ -67,7 +67,7 @@ export class CodexWebSocketProxy extends EventEmitter {
       socket,
       targetUrl: this.targetUrl,
       onClientMessage: (message) => this.handleClientMessage(message),
-      onServerMessage: (message, requestMethod) => this.handleServerMessage(message, requestMethod),
+      onServerMessage: (message, requestMethod) => this.handleServerMessage(connection, message, requestMethod),
       onClose: () => this.connections.delete(connection),
       onError: (err) => this.emit('error', err),
     });
@@ -80,9 +80,14 @@ export class CodexWebSocketProxy extends EventEmitter {
     if (activeThreadId) this.emit('active-thread', activeThreadId);
   }
 
-  handleServerMessage(message, requestMethod) {
+  handleServerMessage(source, message, requestMethod) {
     const activeThreadId = observeServerMessage(message, requestMethod);
     if (activeThreadId) this.emit('active-thread', activeThreadId);
+    if (isServerNotification(message)) {
+      for (const connection of this.connections) {
+        if (connection !== source) connection.sendText(message);
+      }
+    }
   }
 }
 
@@ -156,6 +161,11 @@ class ProxyConnection {
     }
   }
 
+  sendText(message) {
+    if (this.closed) return;
+    sendFrame(this.socket, 0x1, Buffer.from(message));
+  }
+
   close() {
     if (this.closed) return;
     this.closed = true;
@@ -192,6 +202,11 @@ export function observeServerMessage(message, requestMethod = null) {
   if (parsed.method === 'turn/started' && parsed.params?.threadId) return parsed.params.threadId;
   if (parsed.method === 'thread/status/changed' && parsed.params?.threadId) return parsed.params.threadId;
   return null;
+}
+
+export function isServerNotification(message) {
+  const parsed = parseJsonObject(message);
+  return Boolean(parsed && parsed.id === undefined && typeof parsed.method === 'string');
 }
 
 function parseJsonObject(message) {
