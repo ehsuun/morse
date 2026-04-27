@@ -36,6 +36,7 @@ import {
 import { CodexAppServer } from './codex_app_server.mjs';
 import { isSlashPaletteRequest, slashCommandById, slashCommandKeyboard, slashCommandMessage } from './slash_commands.mjs';
 import { authorizeTelegramPeer } from './telegram_auth.mjs';
+import { CodexWebSocketProxy } from './websocket_proxy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(HERE, '.env');
@@ -96,6 +97,8 @@ async function openRemoteCodex() {
   await ensureBridgeBackground();
 
   const remoteUrl = await createLoopbackRemoteUrl();
+  let proxyUrl = await createLoopbackRemoteUrl();
+  while (proxyUrl === remoteUrl) proxyUrl = await createLoopbackRemoteUrl();
   const appServerCommand = `codex app-server --listen ${remoteUrl}`;
   const server = new CodexAppServer({
     command: appServerCommand,
@@ -104,9 +107,12 @@ async function openRemoteCodex() {
   });
   server.on('stderr', (chunk) => console.error(String(chunk).trimEnd()));
   server.on('fatal', (err) => console.error('codex app-server error', err.message));
+  const proxy = new CodexWebSocketProxy({ listenUrl: proxyUrl, targetUrl: remoteUrl });
+  proxy.on('error', (err) => console.error('codex remote proxy error', err.message));
 
   console.log(`morse enabled for ${config.activeWorkspace.label}`);
-  console.log(`starting shared remote: ${remoteUrl}`);
+  console.log(`starting Codex app-server: ${remoteUrl}`);
+  console.log(`starting terminal proxy: ${proxyUrl}`);
   try {
     await server.start();
   } catch (err) {
@@ -114,20 +120,35 @@ async function openRemoteCodex() {
     process.exitCode = 1;
     return;
   }
+  try {
+    await proxy.start();
+  } catch (err) {
+    server.stop();
+    console.error(`could not start Codex remote proxy: ${err.message}`);
+    process.exitCode = 1;
+    return;
+  }
 
   const state = {
     appServerUrl: remoteUrl,
     appServerCommand,
+    proxyUrl,
     pid: server.child?.pid,
     cwd: process.cwd(),
     workspaceLabel: config.activeWorkspace.label,
     startedAt: new Date().toISOString(),
   };
+  proxy.on('active-thread', (threadId) => {
+    if (state.activeThreadId === threadId) return;
+    state.activeThreadId = threadId;
+    state.activeThreadUpdatedAt = new Date().toISOString();
+    saveRuntimeState(state);
+  });
   const statePath = saveRuntimeState(state);
   console.log(`session: ${statePath}`);
 
   const codexArgs = argsAfterOptionalSeparator(process.argv, 3);
-  const args = codexArgsForRemote(remoteUrl, codexArgs);
+  const args = codexArgsForRemote(proxyUrl, codexArgs);
   const resolved = resolveExecutable('codex') ?? 'codex';
 
   console.log(`starting: ${formatCommandForLog('codex', args)}`);
@@ -150,6 +171,7 @@ async function openRemoteCodex() {
     });
   } finally {
     clearRuntimeState(state);
+    proxy.close();
     server.stop();
   }
 }
@@ -345,6 +367,8 @@ function showStatus() {
   if (state?.appServerUrl) {
     console.log('session_status: active');
     console.log(`codex_remote: codex --remote ${state.appServerUrl}`);
+    if (state.proxyUrl) console.log(`codex_proxy: codex --remote ${state.proxyUrl}`);
+    console.log(`terminal_thread: ${state.activeThreadId ?? 'not connected yet'}`);
   } else {
     console.log('session_status: none');
   }
@@ -446,7 +470,8 @@ function formatRunError(err) {
 async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
-  const server = await ensureCodexServer();
+  const state = await waitForActiveCodexThread();
+  const server = await ensureCodexServer(state);
 
   let currentId = ackMessageId;
   let currentText = '';
@@ -486,6 +511,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
     const result = await server.relayTurn({
       cwd: current.cwd,
       text: prompt,
+      threadId: state.activeThreadId,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
       onStarted: ({ threadId, turnId }) => {
         activeRun = { id: runId, threadId, turnId, chatId };
@@ -536,8 +562,26 @@ async function handleCodexRequest(request) {
   });
 }
 
-async function ensureCodexServer() {
-  const state = loadRuntimeState();
+async function waitForActiveCodexThread(timeoutMs = 20000) {
+  const started = Date.now();
+  while (true) {
+    const state = loadRuntimeState();
+    if (!state?.appServerUrl || !state?.appServerCommand) {
+      throw new Error('no active Codex remote. Run `morse codex` from the repo first and keep it open.');
+    }
+    if (state.pid && !isProcessAlive(state.pid)) {
+      clearRuntimeState(state);
+      throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
+    }
+    if (state.activeThreadId) return state;
+    if (Date.now() - started >= timeoutMs) {
+      throw new Error('Codex terminal is not connected yet. Wait for `morse codex` to finish opening, then send the message again.');
+    }
+    await sleep(500);
+  }
+}
+
+async function ensureCodexServer(state = loadRuntimeState()) {
   if (!state?.appServerUrl || !state?.appServerCommand) {
     throw new Error('no active Codex remote. Run `morse codex` from the repo first and keep it open.');
   }

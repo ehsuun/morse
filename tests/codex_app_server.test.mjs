@@ -81,6 +81,47 @@ test('getOrCreateThread resumes matching loaded threads so this client subscribe
   assert.deepEqual(calls.map((call) => call.method), ['thread/loaded/list', 'thread/read', 'thread/resume']);
 });
 
+test('relayTurn uses the provided terminal thread id instead of discovering a thread', async () => {
+  const server = new CodexAppServer();
+  const calls = [];
+  server.start = async () => {};
+  server.getOrCreateThread = async () => assert.fail('should use provided thread');
+  server.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/resume') return { thread: { id: params.threadId, cwd: params.cwd } };
+    if (method === 'turn/start') {
+      server.emit('notification', {
+        method: 'item/completed',
+        params: {
+          threadId: params.threadId,
+          turnId: 'turn-1',
+          item: { id: 'item-1', type: 'agentMessage', text: 'same terminal thread' },
+        },
+      });
+      server.emit('notification', {
+        method: 'turn/completed',
+        params: {
+          threadId: params.threadId,
+          turn: { id: 'turn-1', status: 'completed' },
+        },
+      });
+      return { turn: { id: 'turn-1' } };
+    }
+    throw new Error(`unexpected request: ${method}`);
+  };
+
+  const result = await server.relayTurn({
+    cwd: process.cwd(),
+    text: 'hi',
+    threadId: 'terminal-thread',
+    timeoutMs: 1000,
+  });
+
+  assert.equal(result.threadId, 'terminal-thread');
+  assert.deepEqual(calls.map((call) => call.method), ['thread/resume', 'turn/start']);
+  assert.equal(calls[1].params.threadId, 'terminal-thread');
+});
+
 test('handleJson emits server requests instead of treating them as responses', async () => {
   const server = new CodexAppServer();
   const request = await new Promise((resolve) => {
