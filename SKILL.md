@@ -5,9 +5,9 @@ description: Help the user set up morse on their machine. Trigger when the user 
 
 # Skill: morse setup
 
-The user is configuring their own Telegram -> Codex bridge. Morse should be installed globally, set up once, then enabled from any repo with `morse enable`.
+The user is configuring their own Telegram -> Codex bridge. Morse should be installed globally and set up once.
 
-Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active workspace. A terminal UI can share the same remote thread by running `morse codex`.
+Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active `morse codex` session. `morse start` only polls Telegram while idle; `morse codex` starts the per-run app-server on a random loopback port and opens the terminal UI against it.
 
 Do not drive the interactive prompts yourself. The token paste and user-id confirmation are consent moments; if you type the token or acknowledgments, you have broken that.
 
@@ -62,15 +62,15 @@ morse start
 From any repo:
 
 ```bash
-morse enable
+morse codex
 ```
 
-Then Telegram messages relay into Codex for that repo through the local app-server.
+Then Telegram messages relay into that Codex session.
 
-For a shared terminal UI session:
+To change the active workspace without opening Codex:
 
 ```bash
-morse codex
+morse enable
 ```
 
 Codex CLI args pass through unchanged:
@@ -82,7 +82,8 @@ morse codex --resume
 ## When Something Goes Wrong
 
 - **No Telegram response after setup** -> setup only saved config; start `morse start` and keep it running.
-- **No Codex response / app-server fails** -> restart `morse start` and check the terminal logs.
+- **No Codex response / no active remote** -> run `morse codex` from the repo and keep it open.
+- **App-server fails** -> restart `morse codex` and check the terminal logs.
 - **`could not find the Codex CLI` / `spawn codex ENOENT`** -> open/install Codex once so the command is available, or set `appServerCommand` to the full codex app-server command. On Windows, morse checks the Codex app install location automatically.
 - **"that does not look like a Telegram bot token"** -> they pasted the BotFather message, not just the token. Ask for just the `digits:letters` part.
 - **`Conflict: terminated by other getUpdates request`** -> another bridge process is polling the same token. Stop it and retry.
@@ -94,12 +95,13 @@ morse codex --resume
 
 Verify with the user:
 
-1. `morse status` shows `status: configured`, `codex_remote: codex --remote ws://127.0.0.1:17373`, and the intended active workspace.
+1. `morse status` shows `status: configured` and the intended active workspace.
 2. Start the bridge with `morse start` and keep that process open.
-3. Bot logs `morse ready. allowed=<id> cwd=<path>`.
-4. `/help` in Telegram returns the help text.
-5. `/whoami` shows the active project and cwd.
-6. A simple prompt, such as "say hello", streams a reply back.
+3. Run `morse codex` from the repo and keep that Codex session open.
+4. `morse status` shows `session_status: active`.
+5. `/help` in Telegram returns the help text.
+6. `/whoami` shows the active project and cwd.
+7. A simple prompt, such as "say hello", streams a reply back.
 
 ## Things You Must Not Do
 
