@@ -124,6 +124,7 @@ async function openRemoteCodex() {
   try {
     await server.start();
   } catch (err) {
+    server.stop();
     console.error(`could not start Codex remote: ${err.message}`);
     process.exitCode = 1;
     return;

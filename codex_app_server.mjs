@@ -18,6 +18,7 @@ export class CodexAppServer extends EventEmitter {
     this.contentLength = null;
     this.started = false;
     this.allowReuse = allowReuse;
+    this.stderrTail = '';
   }
 
   async start() {
@@ -64,7 +65,7 @@ export class CodexAppServer extends EventEmitter {
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk) => this.read(chunk));
     this.child.stderr.setEncoding('utf8');
-    this.child.stderr.on('data', (chunk) => this.emit('stderr', chunk));
+    this.child.stderr.on('data', (chunk) => this.recordStderr(chunk));
     this.child.on('error', (err) => this.rejectAll(err));
     this.child.on('close', (code, signal) => {
       this.started = false;
@@ -80,10 +81,11 @@ export class CodexAppServer extends EventEmitter {
     this.child = spawnCommand(resolvedBin, args, {
       cwd: this.cwd,
       stdio: ['ignore', 'ignore', 'pipe'],
+      detached: process.platform !== 'win32',
       windowsHide: true,
     });
     this.child.stderr.setEncoding('utf8');
-    this.child.stderr.on('data', (chunk) => this.emit('stderr', chunk));
+    this.child.stderr.on('data', (chunk) => this.recordStderr(chunk));
     this.child.on('error', (err) => this.rejectAll(err));
     this.child.on('close', (code, signal) => {
       this.started = false;
@@ -104,7 +106,28 @@ export class CodexAppServer extends EventEmitter {
   }
 
   stopChild() {
-    if (this.hasLiveChild()) this.child.kill('SIGTERM');
+    if (!this.hasLiveChild()) return;
+    if (process.platform === 'win32' && this.child.pid) {
+      try {
+        const killer = spawnCommand(windowsTaskkillPath(), ['/pid', String(this.child.pid), '/t', '/f'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        killer.on('error', () => this.child.kill('SIGTERM'));
+      } catch {
+        this.child.kill('SIGTERM');
+      }
+      return;
+    }
+    if (this.child.pid) {
+      try {
+        process.kill(-this.child.pid, 'SIGTERM');
+        return;
+      } catch {
+        // Fall through to killing only the immediate child.
+      }
+    }
+    this.child.kill('SIGTERM');
   }
 
   hasLiveChild() {
@@ -147,7 +170,10 @@ export class CodexAppServer extends EventEmitter {
 
   async waitForWebSocket() {
     let lastError;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 120; i++) {
+      if (this.child && !this.hasLiveChild()) {
+        throw new Error(this.appServerExitedMessage());
+      }
       try {
         await this.connectWebSocket();
         return;
@@ -156,7 +182,12 @@ export class CodexAppServer extends EventEmitter {
         await sleep(250);
       }
     }
-    throw lastError ?? new Error(`could not connect to Codex app-server at ${this.url}`);
+    throw new Error([
+      `could not connect to Codex app-server at ${this.url}`,
+      this.child?.pid ? `spawned pid: ${this.child.pid}` : null,
+      lastError?.message ? `last connection error: ${lastError.message}` : null,
+      this.stderrTail ? `stderr:\n${this.stderrTail.trimEnd()}` : null,
+    ].filter(Boolean).join('\n'));
   }
 
   async waitForWebSocketClose() {
@@ -446,11 +477,32 @@ export class CodexAppServer extends EventEmitter {
     this.pending.clear();
     this.emit('fatal', err);
   }
+
+  recordStderr(chunk) {
+    const text = String(chunk);
+    this.stderrTail = `${this.stderrTail}${text}`.slice(-8000);
+    this.emit('stderr', text);
+  }
+
+  appServerExitedMessage() {
+    return [
+      `Codex app-server exited before opening ${this.url}`,
+      this.child?.exitCode !== null ? `exit code: ${this.child.exitCode}` : null,
+      this.child?.signalCode ? `signal: ${this.child.signalCode}` : null,
+      this.stderrTail ? `stderr:\n${this.stderrTail.trimEnd()}` : null,
+    ].filter(Boolean).join('\n');
+  }
 }
 
 function samePath(a, b) {
   if (process.platform === 'win32') return String(a).toLowerCase() === String(b).toLowerCase();
   return String(a) === String(b);
+}
+
+function windowsTaskkillPath() {
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || '';
+  if (/^[a-z]:\\windows$/i.test(systemRoot)) return `${systemRoot}\\System32\\taskkill.exe`;
+  return 'C:\\Windows\\System32\\taskkill.exe';
 }
 
 export function agentTextFromTurn(turn) {

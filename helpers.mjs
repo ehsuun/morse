@@ -109,7 +109,7 @@ export function commandSpawnSpec(bin, args = [], options = {}, env = process.env
   const baseOptions = { ...options, shell: false };
   if (platform === 'win32' && isWindowsCommandShim(bin)) {
     return {
-      command: env.ComSpec || env.COMSPEC || 'cmd.exe',
+      command: windowsCmdPath(env),
       args: ['/d', '/s', '/c', quoteWindowsCmdLine([bin, ...args])],
       options: baseOptions,
     };
@@ -183,6 +183,12 @@ function hasExecutableExtension(bin, pathExts) {
 
 function isWindowsCommandShim(bin) {
   return /\.(?:cmd|bat)$/i.test(String(bin));
+}
+
+function windowsCmdPath(env) {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || '';
+  if (/^[a-z]:\\windows$/i.test(systemRoot)) return `${systemRoot}\\System32\\cmd.exe`;
+  return 'C:\\Windows\\System32\\cmd.exe';
 }
 
 function quoteWindowsCmdLine(args) {

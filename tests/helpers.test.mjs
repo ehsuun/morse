@@ -114,6 +114,17 @@ test('commandSpawnSpec runs Windows cmd shims through cmd.exe', () => {
   assert.equal(spec.options.shell, false);
 });
 
+test('commandSpawnSpec ignores untrusted COMSPEC for Windows cmd shims', () => {
+  const spec = commandSpawnSpec(
+    'C:\\Tools\\codex.cmd',
+    [],
+    {},
+    { ComSpec: 'C:\\repo\\cmd.exe', SystemRoot: 'D:\\Windows' },
+    'win32',
+  );
+  assert.equal(spec.command, 'D:\\Windows\\System32\\cmd.exe');
+});
+
 test('commandSpawnSpec quotes Windows cmd shim paths and args with spaces', () => {
   const spec = commandSpawnSpec(
     'C:\\Program Files\\Codex\\codex.cmd',

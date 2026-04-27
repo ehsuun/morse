@@ -168,6 +168,9 @@ Legacy `.env` config is still read as a fallback.
 - Keep the bot token secret.
 - Keep the allowlist small.
 - Morse only responds to allowed users in allowed private chats.
+- Treat allowed Telegram users as remote desktop users for the active Codex session.
+- Local Codex websocket endpoints bind to loopback. They are not exposed to the LAN or internet.
+- Morse is not a same-user sandbox: local processes running as your OS user can generally inspect local state and loopback ports.
 - Codex approval and sandbox behavior still apply.
 - One `morse start` process should poll a bot token at a time.
 - This is not an npm package yet. Install from the checkout.
