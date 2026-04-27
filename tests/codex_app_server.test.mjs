@@ -41,6 +41,16 @@ test('turnInputFromTextAndAttachments allows image-only input', () => {
   );
 });
 
+test('turnInputFromTextAndAttachments creates local file reference input', () => {
+  assert.deepEqual(
+    turnInputFromTextAndAttachments('transcribe this', [{ type: 'localFile', label: 'Telegram voice message', path: 'C:\\temp\\voice.ogg' }]),
+    [
+      { type: 'text', text: 'transcribe this', text_elements: [] },
+      { type: 'text', text: 'Telegram voice message downloaded to: C:\\temp\\voice.ogg', text_elements: [] },
+    ],
+  );
+});
+
 test('relayTurn captures notifications emitted before turn/start resolves', async () => {
   const server = new CodexAppServer();
   server.start = async () => {};
