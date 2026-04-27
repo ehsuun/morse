@@ -61,6 +61,7 @@ import { CodexWebSocketProxy } from './websocket_proxy.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = resolve(HERE, '.env');
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]/g;
+const APPROVAL_SEND_RETRIES = 3;
 
 let runtime;
 let API;
@@ -449,6 +450,10 @@ async function handleUpdate(update) {
     await sendSessionsMessage(chatId);
     return;
   }
+  if (!attachments.length && isTelegramCommand(text, '/approvals')) {
+    await resendPendingApprovals(chatId);
+    return;
+  }
   if (!attachments.length && text === '/whoami') {
     const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
     await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\nactive_project: ${current.workspaceLabel}\ncwd: ${current.cwd}`);
@@ -461,6 +466,11 @@ async function handleUpdate(update) {
     } else {
       await send(chatId, 'nothing running.');
     }
+    return;
+  }
+  if (pendingApprovalsForChat(chatId).length) {
+    await send(chatId, 'Codex is waiting for approval; resending the pending approval buttons instead of queueing this message.');
+    await resendPendingApprovals(chatId, { announce: false });
     return;
   }
 
@@ -702,22 +712,20 @@ async function handleCodexRequest(request) {
     });
   }
   const approvalId = String(nextApprovalId++);
-  const keyboard = approvalKeyboard(request.method).map((row) => row.map((button) => ({
-    text: button.text,
-    callback_data: `ap:${approvalId}:${button.callback_data}`,
-  })));
-  const message = await send(chatId, actionPromptMessage(session, switched, 'approval', approvalMessage(request.method, request.params)), {
-    reply_markup: { inline_keyboard: keyboard },
-  });
-  if (session) promptSessions.set(promptSessionKey(chatId, message.message_id), session.id);
-
-  pendingApprovals.set(approvalId, {
+  const approval = {
     request,
     chatId,
-    messageId: message.message_id,
+    messageId: null,
     sessionId: session?.id ?? null,
     createdAt: Date.now(),
-  });
+  };
+  pendingApprovals.set(approvalId, approval);
+
+  try {
+    await deliverApprovalPrompt(approvalId, approval, { session, switched });
+  } catch (err) {
+    console.error(`could not send approval ${approvalId} to Telegram: ${err.message || err}`);
+  }
 }
 
 async function waitForActiveCodexThread(chatId, sessionId = null, timeoutMs = 20000) {
@@ -805,6 +813,51 @@ function sessionForActiveRequest(chatId) {
   const registry = liveSessionRegistry();
   if (activeRun?.sessionId) return sessionById(activeRun.sessionId, registry);
   return activeSessionForChat(chatId, registry);
+}
+
+function pendingApprovalsForChat(chatId) {
+  return [...pendingApprovals.entries()].filter(([, approval]) => approval.chatId === chatId);
+}
+
+async function resendPendingApprovals(chatId, { announce = true } = {}) {
+  const approvals = pendingApprovalsForChat(chatId);
+  if (!approvals.length) {
+    await send(chatId, 'no pending approvals.');
+    return;
+  }
+
+  if (announce) await send(chatId, `resending ${approvals.length} pending approval${approvals.length === 1 ? '' : 's'}...`);
+  for (const [approvalId, approval] of approvals) {
+    try {
+      await deliverApprovalPrompt(approvalId, approval, { resend: true });
+    } catch (err) {
+      console.error(`could not resend approval ${approvalId}: ${err.message || err}`);
+      await send(chatId, `could not resend approval ${approvalId}: ${err.message || String(err)}`);
+    }
+  }
+}
+
+async function deliverApprovalPrompt(approvalId, approval, { session = null, switched = false, resend = false } = {}) {
+  const approvalSession = session ?? (approval.sessionId ? sessionById(approval.sessionId) : null);
+  const keyboard = approvalKeyboard(approval.request.method).map((row) => row.map((button) => ({
+    text: button.text,
+    callback_data: `ap:${approvalId}:${button.callback_data}`,
+  })));
+  const body = [
+    resend ? `Pending approval ${approvalId}` : null,
+    actionPromptMessage(
+      approvalSession,
+      switched,
+      'approval',
+      approvalMessage(approval.request.method, approval.request.params),
+    ),
+  ].filter(Boolean).join('\n\n');
+
+  const message = await sendWithRetry(approval.chatId, body, {
+    reply_markup: { inline_keyboard: keyboard },
+  }, { attempts: APPROVAL_SEND_RETRIES });
+  approval.messageId = message.message_id;
+  if (approvalSession) promptSessions.set(promptSessionKey(approval.chatId, message.message_id), approvalSession.id);
 }
 
 function promptSessionKey(chatId, messageId) {
@@ -1044,6 +1097,19 @@ function send(chatId, text, extra = {}) {
   return tg('sendMessage', { chat_id: chatId, text, ...extra });
 }
 
+async function sendWithRetry(chatId, text, extra = {}, { attempts = 1 } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await send(chatId, text, extra);
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts) await sleep(500 * attempt);
+    }
+  }
+  throw lastError;
+}
+
 async function tg(method, body) {
   const res = await fetch(`${API}/${method}`, {
     method: 'POST',
@@ -1108,6 +1174,7 @@ function helpText() {
     '  /help     this message',
     '  /slash    show Codex slash-command buttons',
     '  /sessions list and switch active Codex sessions',
+    '  /approvals resend pending approval buttons',
     '  /whoami   show your user id, chat id, active project, and working directory',
     '  /cancel   abort the Codex relay currently in progress',
     '',

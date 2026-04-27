@@ -130,6 +130,7 @@ morse codex resume --last
 | `/slash`, `/commands`, `slash` | Show Codex slash-command buttons |
 | Model button in `/slash` | Choose a model from inline buttons |
 | `/sessions` | List active Codex sessions and switch with inline buttons |
+| `/approvals` | Resend pending Codex approval buttons |
 | `/whoami` | Show user id, chat id, active project, and cwd |
 | `/cancel` | Interrupt the current Codex turn |
 | anything else | Send text to Codex |
@@ -142,6 +143,7 @@ If Codex is busy, messages are queued and sent in order.
 
 If Codex asks for approval, morse sends Telegram buttons.
 If a non-active session asks for approval, morse switches the Telegram chat to that session before showing the prompt.
+While an approval is pending, regular Telegram messages resend the pending approval instead of being queued behind it.
 
 Downloaded Telegram media is stored under the local morse config directory, in `media/`.
 
