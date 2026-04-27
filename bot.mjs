@@ -3,9 +3,9 @@
 // Zero npm deps. Long-polls Telegram, relays each authorized message into the
 // active repo's Codex thread, and streams stdout back.
 
-import { closeSync, mkdirSync, openSync, readFileSync, existsSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSetup } from './setup.mjs';
 import { approvalActionLabel, approvalKeyboard, approvalMessage, approvalResponse } from './approvals.mjs';
@@ -33,8 +33,16 @@ import {
   saveBridgeState,
   saveRuntimeState,
 } from './config.mjs';
-import { CodexAppServer } from './codex_app_server.mjs';
-import { isSlashPaletteRequest, slashCommandById, slashCommandKeyboard, slashCommandMessage } from './slash_commands.mjs';
+import { CodexAppServer, turnInputFromTextAndAttachments } from './codex_app_server.mjs';
+import {
+  isSlashPaletteRequest,
+  modelChoiceById,
+  modelChoiceKeyboard,
+  modelChoiceMessage,
+  slashCommandById,
+  slashCommandKeyboard,
+  slashCommandMessage,
+} from './slash_commands.mjs';
 import { authorizeTelegramPeer } from './telegram_auth.mjs';
 import { CodexWebSocketProxy } from './websocket_proxy.mjs';
 
@@ -388,7 +396,7 @@ async function handleUpdate(update) {
   }
 
   const msg = update.message;
-  if (!msg?.text) return;
+  if (!msg) return;
 
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
@@ -399,23 +407,26 @@ async function handleUpdate(update) {
   }
   lastChatId = chatId;
 
-  const text = msg.text.trim();
-  if (text === '/start' || text === '/help') {
+  const attachments = await attachmentsFromTelegramMessage(msg);
+  const text = String(msg.text ?? msg.caption ?? '').trim();
+  if (!text && !attachments.length) return;
+
+  if (!attachments.length && (text === '/start' || text === '/help')) {
     await send(chatId, helpText());
     return;
   }
-  if (isSlashPaletteRequest(text)) {
+  if (!attachments.length && isSlashPaletteRequest(text)) {
     await send(chatId, slashCommandMessage(), {
       reply_markup: { inline_keyboard: slashCommandKeyboard() },
     });
     return;
   }
-  if (text === '/whoami') {
+  if (!attachments.length && text === '/whoami') {
     const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
     await send(chatId, `user_id: ${userId}\nchat_id: ${chatId}\nactive_project: ${current.workspaceLabel}\ncwd: ${current.cwd}`);
     return;
   }
-  if (text === '/cancel') {
+  if (!attachments.length && text === '/cancel') {
     if (activeRun) {
       codexServer.interrupt(activeRun.threadId, activeRun.turnId).catch((err) => console.error('interrupt error', err));
       await send(chatId, 'cancelling current request...');
@@ -425,14 +436,15 @@ async function handleUpdate(update) {
     return;
   }
 
-  await enqueueRun(text, chatId);
+  const inputItems = attachments.length ? turnInputFromTextAndAttachments(text, attachments) : null;
+  await enqueueRun(text, chatId, inputItems);
 }
 
-async function enqueueRun(text, chatId) {
+async function enqueueRun(text, chatId, inputItems = null) {
   const runId = nextRunId++;
   const queued = activeRun || queueDraining || queuedRuns.length > 0;
   const ack = await send(chatId, queued ? `queued (${queuedRuns.length + 1} ahead)` : 'working...');
-  queuedRuns.push({ id: runId, text, chatId, ackMessageId: ack.message_id });
+  queuedRuns.push({ id: runId, text, inputItems, chatId, ackMessageId: ack.message_id });
   drainQueue().catch((err) => console.error('queue drain error', err));
 }
 
@@ -443,8 +455,9 @@ async function drainQueue() {
     while (queuedRuns.length > 0) {
       const run = queuedRuns.shift();
       try {
-        await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id);
+        await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id, run.inputItems);
       } catch (err) {
+        console.error(`run ${run.id} failed: ${formatRunError(err)}`);
         await tg('editMessageText', {
           chat_id: run.chatId,
           message_id: run.ackMessageId,
@@ -467,11 +480,68 @@ function formatRunError(err) {
   return err?.message || String(err);
 }
 
-async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
+async function attachmentsFromTelegramMessage(msg) {
+  const descriptors = [];
+  if (Array.isArray(msg.photo) && msg.photo.length) {
+    const photo = msg.photo.at(-1);
+    descriptors.push({
+      type: 'localImage',
+      fileId: photo.file_id,
+      uniqueId: photo.file_unique_id,
+      fallbackExt: '.jpg',
+    });
+  }
+  if (msg.document?.mime_type?.startsWith('image/')) {
+    descriptors.push({
+      type: 'localImage',
+      fileId: msg.document.file_id,
+      uniqueId: msg.document.file_unique_id,
+      fallbackExt: extname(msg.document.file_name ?? '') || mimeImageExtension(msg.document.mime_type),
+    });
+  }
+
+  const attachments = [];
+  for (const descriptor of descriptors) {
+    attachments.push({
+      type: 'localImage',
+      path: await downloadTelegramFile(descriptor),
+    });
+  }
+  return attachments;
+}
+
+async function downloadTelegramFile({ fileId, uniqueId, fallbackExt = '.jpg' }) {
+  const file = await tg('getFile', { file_id: fileId });
+  if (!file.file_path) throw new Error('telegram getFile did not return a file path');
+  const ext = extname(file.file_path ?? '') || fallbackExt || '.jpg';
+  const name = `${new Date().toISOString().replace(/[:.]/g, '-')}-${safeFilePart(uniqueId || fileId)}${ext}`;
+  const dir = resolve(dirname(globalConfigPath()), 'media');
+  mkdirSync(dir, { recursive: true });
+  const path = resolve(dir, name);
+
+  const res = await fetch(`https://api.telegram.org/file/bot${runtime.token}/${file.file_path}`);
+  if (!res.ok) throw new Error(`telegram file download failed: ${res.status} ${res.statusText}`);
+  writeFileSync(path, Buffer.from(await res.arrayBuffer()), { mode: 0o600 });
+  return path;
+}
+
+function safeFilePart(value) {
+  return String(value ?? 'file').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'file';
+}
+
+function mimeImageExtension(mimeType) {
+  if (mimeType === 'image/png') return '.png';
+  if (mimeType === 'image/webp') return '.webp';
+  if (mimeType === 'image/gif') return '.gif';
+  return '.jpg';
+}
+
+async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems = null) {
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
   const state = await waitForActiveCodexThread();
   const server = await ensureCodexServer(state);
+  console.log(`run ${runId}: relaying to thread ${state.activeThreadId} via ${state.proxyUrl ?? state.appServerUrl}`);
 
   let currentId = ackMessageId;
   let currentText = '';
@@ -511,6 +581,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId) {
     const result = await server.relayTurn({
       cwd: current.cwd,
       text: prompt,
+      inputItems,
       threadId: state.activeThreadId,
       timeoutMs: current.timeoutSeconds > 0 ? current.timeoutSeconds * 1000 : 0,
       onStarted: ({ threadId, turnId }) => {
@@ -634,6 +705,10 @@ async function handleCallbackQuery(query) {
     await handleSlashCommandCallback(query);
     return;
   }
+  if (String(query.data ?? '').startsWith('model:')) {
+    await handleModelChoiceCallback(query);
+    return;
+  }
 
   if (!match) {
     await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown action.', show_alert: true });
@@ -663,6 +738,21 @@ async function handleCallbackQuery(query) {
 
 async function handleSlashCommandCallback(query) {
   const id = String(query.data ?? '').slice('cmd:'.length);
+  if (id === 'back') {
+    if (!query.message?.chat?.id) {
+      await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'No active chat.', show_alert: true });
+      return;
+    }
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Commands' });
+    await tg('editMessageText', {
+      chat_id: query.message.chat.id,
+      message_id: query.message.message_id,
+      text: slashCommandMessage(),
+      reply_markup: { inline_keyboard: slashCommandKeyboard() },
+    });
+    return;
+  }
+
   const command = slashCommandById(id);
   if (!command) {
     await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown command.', show_alert: true });
@@ -676,8 +766,38 @@ async function handleSlashCommandCallback(query) {
   }
 
   lastChatId = chatId;
+  if (command.submenu === 'model') {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Choose model' });
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      text: modelChoiceMessage(),
+      reply_markup: { inline_keyboard: modelChoiceKeyboard() },
+    });
+    return;
+  }
+
   await tg('answerCallbackQuery', { callback_query_id: query.id, text: `Queued ${command.command}` });
   await enqueueRun(command.command, chatId);
+}
+
+async function handleModelChoiceCallback(query) {
+  const id = String(query.data ?? '').slice('model:'.length);
+  const model = modelChoiceById(id);
+  if (!model) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'Unknown model.', show_alert: true });
+    return;
+  }
+
+  const chatId = query.message?.chat?.id;
+  if (!chatId) {
+    await tg('answerCallbackQuery', { callback_query_id: query.id, text: 'No active chat.', show_alert: true });
+    return;
+  }
+
+  lastChatId = chatId;
+  await tg('answerCallbackQuery', { callback_query_id: query.id, text: `Queued ${model.label}` });
+  await enqueueRun(model.command, chatId);
 }
 
 function isApprovalRequest(method) {
@@ -765,6 +885,8 @@ function helpText() {
     '  /slash    show Codex slash-command buttons',
     '  /whoami   show your user id, chat id, active project, and working directory',
     '  /cancel   abort the Codex relay currently in progress',
+    '',
+    'photos and image documents are sent to Codex with the caption as the prompt.',
   ].join('\n');
 }
 

@@ -121,8 +121,11 @@ morse codex resume --last
 | `/whoami` | Show user id, chat id, active project, and cwd |
 | `/cancel` | Interrupt the current Codex turn |
 | anything else | Send text to Codex |
+| photo / image document | Send the image to Codex, using the caption as the prompt |
 
 Unknown slash commands are sent to Codex unchanged.
+
+The slash palette includes a Model button. Tap it to choose a model from inline buttons.
 
 If Codex is busy, messages are queued and sent in order.
 

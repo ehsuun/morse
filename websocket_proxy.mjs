@@ -11,6 +11,11 @@ export class CodexWebSocketProxy extends EventEmitter {
     this.targetUrl = targetUrl;
     this.server = null;
     this.connections = new Set();
+    this.activeThreadId = null;
+    this.activeConnection = null;
+    this.nextProxyId = 1;
+    this.routedClientRequests = new Map();
+    this.routedServerRequests = new Map();
   }
 
   async start() {
@@ -66,7 +71,7 @@ export class CodexWebSocketProxy extends EventEmitter {
     const connection = new ProxyConnection({
       socket,
       targetUrl: this.targetUrl,
-      onClientMessage: (message) => this.handleClientMessage(message),
+      onClientMessage: (message) => this.handleClientMessage(connection, message),
       onServerMessage: (message, requestMethod) => this.handleServerMessage(connection, message, requestMethod),
       onClose: () => this.connections.delete(connection),
       onError: (err) => this.emit('error', err),
@@ -75,19 +80,104 @@ export class CodexWebSocketProxy extends EventEmitter {
     connection.start();
   }
 
-  handleClientMessage(message) {
+  handleClientMessage(source, message) {
+    const parsed = parseJsonObject(message);
+    if (parsed?.method === 'initialize') source.clientName = parsed.params?.clientInfo?.name ?? null;
+
+    if (this.routeServerResponseFromClient(source, parsed)) return true;
+    if (this.routeTerminalRequestFromClient(source, parsed)) return true;
+
     const activeThreadId = observeClientMessage(message);
-    if (activeThreadId) this.emit('active-thread', activeThreadId);
+    if (activeThreadId) this.setActiveThread(activeThreadId, source);
+    return false;
   }
 
   handleServerMessage(source, message, requestMethod) {
+    const parsed = parseJsonObject(message);
+    const routedClientResponse = this.routeClientResponseFromServer(parsed);
+    if (routedClientResponse) return true;
+
     const activeThreadId = observeServerMessage(message, requestMethod);
-    if (activeThreadId) this.emit('active-thread', activeThreadId);
+    if (activeThreadId) this.setActiveThread(activeThreadId, source);
+
+    this.broadcastServerRequestToMorseClients(source, parsed);
     if (isServerNotification(message)) {
       for (const connection of this.connections) {
         if (connection !== source) connection.sendText(message);
       }
     }
+    return false;
+  }
+
+  setActiveThread(threadId, source) {
+    this.activeThreadId = threadId;
+    if (!source.isMorseClient()) this.activeConnection = source;
+    this.emit('active-thread', threadId);
+  }
+
+  routeTerminalRequestFromClient(source, parsed) {
+    if (!source.isMorseClient()) return false;
+    if (!this.activeConnection || this.activeConnection.closed) return false;
+    if (!isTerminalThreadRequest(parsed, this.activeThreadId)) return false;
+
+    const target = this.activeConnection;
+    if (!target.backendOpen) {
+      source.sendText(jsonRpcError(parsed?.id, -32000, 'active Codex terminal websocket is not ready'));
+      return true;
+    }
+
+    const proxyId = this.nextJsonRpcId('morse');
+    this.routedClientRequests.set(proxyId, {
+      requester: source,
+      originalId: parsed.id,
+      method: parsed.method,
+    });
+    target.backend.send(JSON.stringify({ ...parsed, id: proxyId }));
+    return true;
+  }
+
+  routeClientResponseFromServer(parsed) {
+    if (!parsed || parsed.id === undefined || parsed.method) return false;
+    const route = this.routedClientRequests.get(parsed.id);
+    if (!route) return false;
+
+    this.routedClientRequests.delete(parsed.id);
+    route.requester.sendText(JSON.stringify({ ...parsed, id: route.originalId }));
+    return true;
+  }
+
+  broadcastServerRequestToMorseClients(source, parsed) {
+    if (!parsed || parsed.id === undefined || !parsed.method) return;
+    if (source.isMorseClient()) return;
+    if (!isApprovalServerRequest(parsed.method)) return;
+
+    for (const connection of this.connections) {
+      if (connection === source || !connection.isMorseClient()) continue;
+      const proxyId = this.nextJsonRpcId('server');
+      this.routedServerRequests.set(proxyId, {
+        serverConnection: source,
+        originalId: parsed.id,
+      });
+      connection.sendText(JSON.stringify({ ...parsed, id: proxyId }));
+    }
+  }
+
+  routeServerResponseFromClient(source, parsed) {
+    if (!source.isMorseClient()) return false;
+    if (!parsed || parsed.id === undefined || parsed.method) return false;
+
+    const route = this.routedServerRequests.get(parsed.id);
+    if (!route) return false;
+    this.routedServerRequests.delete(parsed.id);
+
+    if (!route.serverConnection.closed && route.serverConnection.backendOpen) {
+      route.serverConnection.backend.send(JSON.stringify({ ...parsed, id: route.originalId }));
+    }
+    return true;
+  }
+
+  nextJsonRpcId(prefix) {
+    return `${prefix}-${Date.now()}-${this.nextProxyId++}`;
   }
 }
 
@@ -103,6 +193,7 @@ class ProxyConnection {
     this.pendingClientMessages = [];
     this.pendingRequests = new Map();
     this.backendOpen = false;
+    this.clientName = null;
   }
 
   start() {
@@ -116,7 +207,8 @@ class ProxyConnection {
       const parsed = parseJsonObject(message);
       const requestMethod = parsed?.id === undefined ? null : this.pendingRequests.get(parsed.id);
       if (parsed?.id !== undefined) this.pendingRequests.delete(parsed.id);
-      this.onServerMessage(message, requestMethod);
+      const handled = this.onServerMessage(message, requestMethod);
+      if (handled) return;
       sendFrame(this.socket, 0x1, Buffer.from(message));
     };
     this.backend.onerror = () => {};
@@ -152,7 +244,8 @@ class ProxyConnection {
       if (parsed?.id !== undefined && parsed?.method) {
         this.pendingRequests.set(parsed.id, parsed.method);
       }
-      this.onClientMessage(message);
+      const handled = this.onClientMessage(message);
+      if (handled) continue;
       if (this.backendOpen) {
         this.backend.send(message);
       } else {
@@ -180,6 +273,10 @@ class ProxyConnection {
       // Best effort close.
     }
     this.onClose();
+  }
+
+  isMorseClient() {
+    return this.clientName === 'morse';
   }
 }
 
@@ -216,6 +313,26 @@ function parseJsonObject(message) {
   } catch {
     return null;
   }
+}
+
+function isTerminalThreadRequest(parsed, activeThreadId) {
+  if (!parsed || parsed.id === undefined || !parsed.method) return false;
+  if (!['turn/start', 'turn/steer', 'turn/interrupt'].includes(parsed.method)) return false;
+  return Boolean(activeThreadId && parsed.params?.threadId === activeThreadId);
+}
+
+function jsonRpcError(id, code, message) {
+  return JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } });
+}
+
+function isApprovalServerRequest(method) {
+  return [
+    'item/commandExecution/requestApproval',
+    'item/fileChange/requestApproval',
+    'item/permissions/requestApproval',
+    'execCommandApproval',
+    'applyPatchApproval',
+  ].includes(method);
 }
 
 function readFrame(buffer) {

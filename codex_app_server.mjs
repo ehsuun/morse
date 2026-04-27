@@ -194,9 +194,9 @@ export class CodexAppServer extends EventEmitter {
     });
   }
 
-  async relayTurn({ cwd, text, threadId, onStarted, onDelta, timeoutMs = 600000 }) {
+  async relayTurn({ cwd, text, inputItems = null, threadId, onStarted, onDelta, timeoutMs = 600000 }) {
     await this.start();
-    const thread = threadId ? await this.resumeThread(threadId, cwd) : await this.getOrCreateThread(cwd);
+    const thread = threadId ? { id: threadId, cwd } : await this.getOrCreateThread(cwd);
     let output = '';
     let turnId = null;
     const agentItemText = new Map();
@@ -286,7 +286,7 @@ export class CodexAppServer extends EventEmitter {
       this.request('turn/start', {
         threadId: thread.id,
         cwd,
-        input: [{ type: 'text', text }],
+        input: inputItems ?? [textInput(text)],
       }).then((turn) => {
         turnId = turn.turn.id;
         onStarted?.({ threadId: thread.id, turnId });
@@ -311,7 +311,7 @@ export class CodexAppServer extends EventEmitter {
   }
 
   async resumeThread(threadId, cwd) {
-    const resumed = await this.request('thread/resume', { threadId, cwd });
+    const resumed = await this.request('thread/resume', { threadId, cwd, persistExtendedHistory: true });
     return resumed.thread ?? { id: threadId, cwd };
   }
 
@@ -321,7 +321,7 @@ export class CodexAppServer extends EventEmitter {
       try {
         const { thread } = await this.request('thread/read', { threadId, includeTurns: false });
         if (samePath(thread.cwd, cwd)) {
-          const resumed = await this.request('thread/resume', { threadId: thread.id, cwd });
+          const resumed = await this.request('thread/resume', { threadId: thread.id, cwd, persistExtendedHistory: true });
           return resumed.thread ?? thread;
         }
       } catch {
@@ -339,7 +339,7 @@ export class CodexAppServer extends EventEmitter {
     });
     if (list.data?.[0]) {
       const thread = list.data[0];
-      await this.request('thread/resume', { threadId: thread.id, cwd });
+      await this.request('thread/resume', { threadId: thread.id, cwd, persistExtendedHistory: true });
       return thread;
     }
 
@@ -348,6 +348,8 @@ export class CodexAppServer extends EventEmitter {
       sessionStartSource: 'startup',
       approvalPolicy: null,
       sandbox: null,
+      experimentalRawEvents: false,
+      persistExtendedHistory: true,
     });
     return started.thread;
   }
@@ -460,6 +462,21 @@ export function agentTextFromTurn(turn) {
 
 export function agentTextFromItem(item) {
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : '';
+}
+
+function textInput(text) {
+  return { type: 'text', text, text_elements: [] };
+}
+
+export function turnInputFromTextAndAttachments(text, attachments = []) {
+  return [
+    ...(String(text ?? '') ? [textInput(String(text))] : []),
+    ...attachments.map((attachment) => {
+      if (attachment.type === 'localImage') return { type: 'localImage', path: attachment.path };
+      if (attachment.type === 'image') return { type: 'image', url: attachment.url };
+      return attachment;
+    }),
+  ];
 }
 
 function sleep(ms) {

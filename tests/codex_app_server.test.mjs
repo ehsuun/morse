@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CodexAppServer, agentTextFromItem, agentTextFromTurn } from '../codex_app_server.mjs';
+import { CodexAppServer, agentTextFromItem, agentTextFromTurn, turnInputFromTextAndAttachments } from '../codex_app_server.mjs';
 
 test('agentTextFromItem extracts completed agent messages', () => {
   assert.equal(agentTextFromItem({ type: 'agentMessage', text: 'hello from Codex' }), 'hello from Codex');
@@ -21,6 +21,23 @@ test('agentTextFromTurn joins agent message items', () => {
       ],
     }),
     'first\n\nsecond',
+  );
+});
+
+test('turnInputFromTextAndAttachments creates text and local image input', () => {
+  assert.deepEqual(
+    turnInputFromTextAndAttachments('caption', [{ type: 'localImage', path: 'C:\\temp\\photo.jpg' }]),
+    [
+      { type: 'text', text: 'caption', text_elements: [] },
+      { type: 'localImage', path: 'C:\\temp\\photo.jpg' },
+    ],
+  );
+});
+
+test('turnInputFromTextAndAttachments allows image-only input', () => {
+  assert.deepEqual(
+    turnInputFromTextAndAttachments('', [{ type: 'localImage', path: 'C:\\temp\\photo.jpg' }]),
+    [{ type: 'localImage', path: 'C:\\temp\\photo.jpg' }],
   );
 });
 
@@ -88,7 +105,6 @@ test('relayTurn uses the provided terminal thread id instead of discovering a th
   server.getOrCreateThread = async () => assert.fail('should use provided thread');
   server.request = async (method, params) => {
     calls.push({ method, params });
-    if (method === 'thread/resume') return { thread: { id: params.threadId, cwd: params.cwd } };
     if (method === 'turn/start') {
       server.emit('notification', {
         method: 'item/completed',
@@ -118,8 +134,9 @@ test('relayTurn uses the provided terminal thread id instead of discovering a th
   });
 
   assert.equal(result.threadId, 'terminal-thread');
-  assert.deepEqual(calls.map((call) => call.method), ['thread/resume', 'turn/start']);
-  assert.equal(calls[1].params.threadId, 'terminal-thread');
+  assert.deepEqual(calls.map((call) => call.method), ['turn/start']);
+  assert.equal(calls[0].params.threadId, 'terminal-thread');
+  assert.deepEqual(calls[0].params.input, [{ type: 'text', text: 'hi', text_elements: [] }]);
 });
 
 test('handleJson emits server requests instead of treating them as responses', async () => {
