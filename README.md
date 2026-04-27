@@ -12,9 +12,9 @@ It is small on purpose. Read it, change it, extend it.
 
 ## Install
 
-From this checkout:
-
 ```bash
+git clone https://github.com/ehsuun/morse.git
+cd morse
 npm install -g .
 ```
 
@@ -26,20 +26,19 @@ Requirements:
 
 ## Use
 
-Do this once:
+Set up morse:
 
 ```bash
-npm install -g .
 morse setup
 ```
 
-Do this whenever you want the Telegram bot online:
+Run morse:
 
 ```bash
 morse start
 ```
 
-Keep this process running. It only polls Telegram while idle.
+This starts the Telegram bridge in the background. `morse codex` also starts it if needed.
 
 Do this from the repo you want Codex to work in:
 
@@ -73,10 +72,16 @@ Your token stays on your machine. Telegram traffic goes through `api.telegram.or
 
 ## Run
 
-Keep the Telegram bridge running:
+Start the Telegram bridge:
 
 ```bash
 morse start
+```
+
+Stop the background bridge:
+
+```bash
+morse stop
 ```
 
 In a repo:
@@ -126,7 +131,8 @@ If Codex asks for approval, morse sends Telegram buttons.
 
 ```bash
 morse setup              # configure Telegram and first workspace
-morse start              # run the Telegram bridge
+morse start              # start the Telegram bridge in the background
+morse stop               # stop the background Telegram bridge
 morse enable             # set current directory as active workspace
 morse codex [codex args] # open Codex on the shared local remote
 morse status             # print config and active workspace
@@ -166,5 +172,5 @@ Legacy `.env` config is still read as a fallback.
 
 ```bash
 npm test
-npm start
+node bot.mjs start --foreground
 ```

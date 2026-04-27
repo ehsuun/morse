@@ -4,15 +4,20 @@ import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  bridgeLogPath,
+  bridgeStatePath,
+  clearBridgeState,
   clearRuntimeState,
   enableWorkspace,
   globalConfigPath,
+  loadBridgeState,
   loadGlobalConfig,
   loadRuntimeState,
   normalizeCodexCommand,
   runtimeFromEnv,
   runtimeFromGlobalConfig,
   runtimeStatePath,
+  saveBridgeState,
   saveGlobalConfig,
   saveRuntimeState,
 } from '../config.mjs';
@@ -45,6 +50,13 @@ test('runtimeStatePath lives next to MORSE_CONFIG by default', () => {
   });
 });
 
+test('bridge paths live next to MORSE_CONFIG by default', () => {
+  withMorseConfigPath((path) => {
+    assert.equal(bridgeStatePath(), resolve(path, '..', 'bridge.json'));
+    assert.equal(bridgeLogPath(), resolve(path, '..', 'bridge.log'));
+  });
+});
+
 test('saveGlobalConfig and loadGlobalConfig round trip config', () => {
   withMorseConfigPath((path) => {
     const config = {
@@ -54,6 +66,18 @@ test('saveGlobalConfig and loadGlobalConfig round trip config', () => {
       activeWorkspace: { cwd: 'J:\\Projects\\morse', label: 'morse', enabledAt: 'now' },
     };
     saveGlobalConfig(config);
+    assert.deepEqual(loadGlobalConfig(path), config);
+  });
+});
+
+test('loadGlobalConfig accepts UTF-8 BOM files', () => {
+  withMorseConfigPath((path) => {
+    const config = {
+      telegramBotToken: '1234567890:test',
+      allowedUserIds: [42],
+      activeWorkspace: { cwd: 'J:\\Projects\\morse', label: 'morse', enabledAt: 'now' },
+    };
+    writeFileSync(path, `\uFEFF${JSON.stringify(config)}`, 'utf8');
     assert.deepEqual(loadGlobalConfig(path), config);
   });
 });
@@ -71,6 +95,22 @@ test('saveRuntimeState and clearRuntimeState manage private session state', () =
     assert.deepEqual(loadRuntimeState(), state);
     clearRuntimeState(state);
     assert.equal(loadRuntimeState(), null);
+  });
+});
+
+test('saveBridgeState and clearBridgeState manage private bridge state', () => {
+  withMorseConfigPath(() => {
+    const state = {
+      pid: 123,
+      startedAt: 'now',
+      logPath: 'bridge.log',
+    };
+    saveBridgeState(state);
+    assert.deepEqual(loadBridgeState(), state);
+    clearBridgeState({ ...state, pid: 456 });
+    assert.deepEqual(loadBridgeState(), state);
+    clearBridgeState(state);
+    assert.equal(loadBridgeState(), null);
   });
 });
 

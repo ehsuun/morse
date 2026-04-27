@@ -7,7 +7,7 @@ description: Help the user set up morse on their machine. Trigger when the user 
 
 The user is configuring their own Telegram -> Codex bridge. Morse should be installed globally and set up once.
 
-Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active `morse codex` session. `morse start` only polls Telegram while idle; `morse codex` starts the per-run app-server on a random loopback port and opens the terminal UI against it.
+Morse relays Telegram prompts through Codex's experimental local app-server websocket for the active `morse codex` session. `morse start` starts the Telegram bridge in the background; `morse codex` starts the bridge if needed, starts the per-run app-server on a random loopback port, and opens the terminal UI against it.
 
 Do not drive the interactive prompts yourself. The token paste and user-id confirmation are consent moments; if you type the token or acknowledgments, you have broken that.
 
@@ -53,10 +53,16 @@ Global config locations:
 
 ## Daily Use
 
-Keep the local bridge running:
+Start the local bridge:
 
 ```bash
 morse start
+```
+
+Stop it:
+
+```bash
+morse stop
 ```
 
 From any repo:
@@ -81,7 +87,7 @@ morse codex --resume
 
 ## When Something Goes Wrong
 
-- **No Telegram response after setup** -> setup only saved config; start `morse start` and keep it running.
+- **No Telegram response after setup** -> setup only saved config; run `morse start` or `morse codex`.
 - **No Codex response / no active remote** -> run `morse codex` from the repo and keep it open.
 - **App-server fails** -> restart `morse codex` and check the terminal logs.
 - **`could not find the Codex CLI` / `spawn codex ENOENT`** -> open/install Codex once so the command is available, or set `appServerCommand` to the full codex app-server command. On Windows, morse checks the Codex app install location automatically.
@@ -96,7 +102,7 @@ morse codex --resume
 Verify with the user:
 
 1. `morse status` shows `status: configured` and the intended active workspace.
-2. Start the bridge with `morse start` and keep that process open.
+2. Start the bridge with `morse start`; it should print `morse is up and running`.
 3. Run `morse codex` from the repo and keep that Codex session open.
 4. `morse status` shows `session_status: active`.
 5. `/help` in Telegram returns the help text.

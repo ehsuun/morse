@@ -3,7 +3,7 @@
 // Zero npm deps. Long-polls Telegram, relays each authorized message into the
 // active repo's Codex thread, and streams stdout back.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,13 +18,18 @@ import {
   splitTelegramText,
 } from './helpers.mjs';
 import {
+  bridgeLogPath,
+  bridgeStatePath,
+  clearBridgeState,
   clearRuntimeState,
   enableWorkspace,
   globalConfigPath,
+  loadBridgeState,
   loadGlobalConfig,
   loadRuntimeConfig,
   loadRuntimeState,
   runtimeStatePath,
+  saveBridgeState,
   saveRuntimeState,
 } from './config.mjs';
 import { CodexAppServer } from './codex_app_server.mjs';
@@ -55,7 +60,13 @@ async function main() {
   if (command === 'setup') {
     await runSetup();
   } else if (command === 'start') {
-    await startBot();
+    if (process.argv.includes('--foreground')) {
+      await startBot();
+    } else {
+      await startBridgeBackground({ announce: true });
+    }
+  } else if (command === 'stop') {
+    stopBridge();
   } else if (command === 'enable') {
     enableCurrentWorkspace();
   } else if (command === 'codex') {
@@ -80,6 +91,8 @@ async function openRemoteCodex() {
     process.exitCode = 1;
     return;
   }
+
+  await ensureBridgeBackground();
 
   const remoteUrl = await createLoopbackRemoteUrl();
   const appServerCommand = `codex app-server --listen ${remoteUrl}`;
@@ -141,8 +154,22 @@ async function openRemoteCodex() {
 }
 
 async function startBot() {
+  const existing = loadLiveBridgeState();
+  if (existing && existing.pid !== process.pid) {
+    console.log(`morse is up and running (pid ${existing.pid})`);
+    if (existing.logPath) console.log(`log: ${existing.logPath}`);
+    return;
+  }
+
   runtime = await ensureConfigured();
   API = `https://api.telegram.org/bot${runtime.token}`;
+  const bridgeState = {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    logPath: process.env.MORSE_BRIDGE_LOG || null,
+  };
+  saveBridgeState(bridgeState);
+  installBridgeStateCleanup(bridgeState);
 
   console.log(`morse ready. allowed=${runtime.allowedUserIds.join(',')} cwd=${runtime.cwd}`);
   console.log(`active workspace: ${runtime.workspaceLabel}`);
@@ -162,6 +189,103 @@ async function startBot() {
       console.error('poll error', err);
       await sleep(2000);
     }
+  }
+}
+
+async function ensureBridgeBackground() {
+  const bridge = loadLiveBridgeState();
+  if (bridge) return bridge;
+  return await startBridgeBackground({ announce: false });
+}
+
+async function startBridgeBackground({ announce }) {
+  const existing = loadLiveBridgeState();
+  if (existing) {
+    if (announce) {
+      console.log(`morse is up and running (pid ${existing.pid})`);
+      console.log(`log: ${existing.logPath || bridgeLogPath()}`);
+    }
+    return existing;
+  }
+
+  const config = loadRuntimeConfig(process.env, process.cwd());
+  if (!config) {
+    console.error('no morse config found. run "morse setup" first.');
+    process.exitCode = 1;
+    return null;
+  }
+
+  const logPath = bridgeLogPath();
+  mkdirSync(dirname(logPath), { recursive: true });
+  const out = openSync(logPath, 'a');
+  let child;
+  try {
+    child = spawnCommand(process.execPath, [fileURLToPath(import.meta.url), 'start', '--foreground'], {
+      cwd: HERE,
+      detached: true,
+      stdio: ['ignore', out, out],
+      windowsHide: true,
+      env: {
+        ...process.env,
+        MORSE_BRIDGE_LOG: logPath,
+      },
+    });
+  } finally {
+    closeSync(out);
+  }
+  child.unref();
+
+  const state = {
+    pid: child.pid,
+    startedAt: new Date().toISOString(),
+    logPath,
+  };
+  saveBridgeState(state);
+
+  if (announce) {
+    console.log(`morse is up and running (pid ${state.pid})`);
+    console.log(`log: ${logPath}`);
+  }
+  return state;
+}
+
+function stopBridge() {
+  const state = loadBridgeState();
+  if (!state?.pid) {
+    console.log('morse bridge is not running.');
+    return;
+  }
+  if (!isProcessAlive(state.pid)) {
+    clearBridgeState(state);
+    console.log('morse bridge was not running. cleared stale state.');
+    return;
+  }
+  try {
+    process.kill(state.pid, 'SIGTERM');
+    clearBridgeState(state);
+    console.log(`stopped morse bridge (pid ${state.pid})`);
+  } catch (err) {
+    console.error(`could not stop morse bridge: ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
+function loadLiveBridgeState() {
+  const state = loadBridgeState();
+  if (!state?.pid) return null;
+  if (isProcessAlive(state.pid)) return state;
+  clearBridgeState(state);
+  return null;
+}
+
+function installBridgeStateCleanup(state) {
+  const cleanup = () => clearBridgeState(state);
+  process.once('exit', cleanup);
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+      cleanup();
+      process.exit(0);
+    });
   }
 }
 
@@ -208,6 +332,14 @@ function showStatus() {
   console.log(`active_project: ${current.workspaceLabel}`);
   console.log(`cwd: ${current.cwd}`);
   console.log(`session: ${runtimeStatePath()}`);
+  const bridge = loadLiveBridgeState();
+  if (bridge) {
+    console.log(`bridge_status: running`);
+    console.log(`bridge_pid: ${bridge.pid}`);
+    if (bridge.logPath) console.log(`bridge_log: ${bridge.logPath}`);
+  } else {
+    console.log(`bridge_status: stopped`);
+  }
   const state = loadRuntimeState();
   if (state?.appServerUrl) {
     console.log('session_status: active');
@@ -596,7 +728,8 @@ function cliHelpText() {
     '',
     'commands:',
     '  morse setup    one-time Telegram bot/user setup',
-    '  morse start    run the Telegram polling bridge',
+    '  morse start    start the Telegram bridge in the background',
+    '  morse stop     stop the background Telegram bridge',
     '  morse enable   set the current directory as the active Codex workspace',
     '  morse codex [codex args]',
     '                 enable this repo and open Codex on the shared remote',

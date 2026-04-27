@@ -45,7 +45,7 @@ export async function runSetup() {
     console.log(`config: ${configPath}`);
     console.log('');
     console.log('Next:');
-    console.log('  1. Start the local bridge and keep it running: `morse start`.');
+    console.log('  1. Start morse: `morse start`.');
     console.log('  2. Open Codex through morse: `morse codex` (Codex args pass through, e.g. `--resume`).');
     console.log(`  3. Open @${bot.username} in Telegram and send /help.`);
     console.log('');

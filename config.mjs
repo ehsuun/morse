@@ -17,14 +17,29 @@ export function runtimeStatePath() {
   return resolve(dirname(globalConfigPath()), 'state.json');
 }
 
+export function bridgeStatePath() {
+  if (process.env.MORSE_BRIDGE_STATE) return resolve(process.env.MORSE_BRIDGE_STATE);
+  return resolve(dirname(globalConfigPath()), 'bridge.json');
+}
+
+export function bridgeLogPath() {
+  if (process.env.MORSE_BRIDGE_LOG) return resolve(process.env.MORSE_BRIDGE_LOG);
+  return resolve(dirname(globalConfigPath()), 'bridge.log');
+}
+
 export function loadGlobalConfig(path = globalConfigPath()) {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, 'utf8'));
+  return readJson(path);
 }
 
 export function loadRuntimeState(path = runtimeStatePath()) {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, 'utf8'));
+  return readJson(path);
+}
+
+export function loadBridgeState(path = bridgeStatePath()) {
+  if (!existsSync(path)) return null;
+  return readJson(path);
 }
 
 export function saveGlobalConfig(config, path = globalConfigPath()) {
@@ -32,6 +47,10 @@ export function saveGlobalConfig(config, path = globalConfigPath()) {
 }
 
 export function saveRuntimeState(state, path = runtimeStatePath()) {
+  return savePrivateJson(state, path);
+}
+
+export function saveBridgeState(state, path = bridgeStatePath()) {
   return savePrivateJson(state, path);
 }
 
@@ -44,11 +63,24 @@ export function clearRuntimeState(expectedState = null, path = runtimeStatePath(
   rmSync(path, { force: true });
 }
 
+export function clearBridgeState(expectedState = null, path = bridgeStatePath()) {
+  if (!existsSync(path)) return;
+  if (expectedState) {
+    const current = loadBridgeState(path);
+    if (current?.pid !== expectedState.pid) return;
+  }
+  rmSync(path, { force: true });
+}
+
 function savePrivateJson(value, path) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   return path;
+}
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
 }
 
 export function parseAllowedUserIds(value) {
