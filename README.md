@@ -10,6 +10,15 @@ You bring a Telegram bot token. Morse runs on your machine. There is no morse se
 
 It is small on purpose. Read it, change it, extend it.
 
+What it does:
+
+- relays allowed Telegram messages into your active Codex terminal session
+- streams Codex replies back to Telegram
+- shows Codex approval prompts as Telegram buttons
+- sends Telegram photos and image documents to Codex as image input
+- offers a small inline slash-command palette, including model selection
+- keeps all morse state local
+
 ## Install
 
 ```bash
@@ -47,6 +56,8 @@ morse codex
 ```
 
 Then use Telegram. If you switch repos, run `morse codex` or `morse enable` from the new repo.
+
+You can skip `morse start` if you normally launch with `morse codex`; it starts the bridge when needed.
 
 ## Setup
 
@@ -118,6 +129,7 @@ morse codex resume --last
 |---|---|
 | `/help`, `/start` | Show morse help |
 | `/slash`, `/commands`, `slash` | Show Codex slash-command buttons |
+| Model button in `/slash` | Choose a model from inline buttons |
 | `/whoami` | Show user id, chat id, active project, and cwd |
 | `/cancel` | Interrupt the current Codex turn |
 | anything else | Send text to Codex |
@@ -125,11 +137,11 @@ morse codex resume --last
 
 Unknown slash commands are sent to Codex unchanged.
 
-The slash palette includes a Model button. Tap it to choose a model from inline buttons.
-
 If Codex is busy, messages are queued and sent in order.
 
 If Codex asks for approval, morse sends Telegram buttons.
+
+Downloaded Telegram images are stored under the local morse config directory, in `media/`.
 
 ## Commands
 
