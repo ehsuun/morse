@@ -616,9 +616,10 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
   const current = loadRuntimeConfig(process.env, process.cwd()) ?? runtime;
   const streamDebounceMs = current.streamDebounceMs;
   const state = await waitForActiveCodexThread(chatId, sessionId);
+  const targetCwd = state.cwd ?? current.cwd;
   upsertSession({ ...state, status: 'running', waitingReason: null, waitingSince: null });
   const server = await ensureCodexServer(state);
-  console.log(`run ${runId}: relaying to thread ${state.activeThreadId} via ${state.proxyUrl ?? state.appServerUrl}`);
+  console.log(`run ${runId}: relaying to thread ${state.activeThreadId} cwd ${targetCwd} via ${state.proxyUrl ?? state.appServerUrl}`);
 
   let currentId = ackMessageId;
   let currentText = '';
@@ -656,7 +657,7 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
 
   try {
     const result = await server.relayTurn({
-      cwd: current.cwd,
+      cwd: targetCwd,
       text: prompt,
       inputItems,
       threadId: state.activeThreadId,
