@@ -26,6 +26,8 @@ What it does:
 npm install -g morse-bridge
 ```
 
+Or install directly from GitHub: `npm install -g git+https://github.com/ehsuun/morse.git`.
+
 Requirements:
 
 - Node.js 20+
