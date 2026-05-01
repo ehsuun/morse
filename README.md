@@ -157,11 +157,15 @@ Downloaded Telegram media is stored under the local morse config directory, in `
 morse setup              # configure Telegram and first workspace
 morse start              # start the Telegram bridge in the background
 morse stop               # stop the background Telegram bridge
+morse restart            # restart the background Telegram bridge after upgrades
+morse doctor             # inspect and clean stale local bridge/session state
 morse enable             # set current directory as active workspace
 morse codex [codex args] # open Codex on the shared local remote
 morse status             # print config and active workspace
 morse version            # print morse package version
 ```
+
+After upgrading a global install, run `morse restart` so the background bridge uses the newly installed package code. `morse status` warns when the running bridge version differs from the installed CLI version.
 
 ## Versioning
 

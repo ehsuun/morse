@@ -93,6 +93,10 @@ async function main() {
     }
   } else if (command === 'stop') {
     stopBridge();
+  } else if (command === 'restart') {
+    await restartBridge();
+  } else if (command === 'doctor') {
+    showDoctor();
   } else if (command === 'enable') {
     enableCurrentWorkspace();
   } else if (command === 'codex') {
@@ -225,6 +229,7 @@ async function startBot() {
     pid: process.pid,
     startedAt: new Date().toISOString(),
     logPath: process.env.MORSE_BRIDGE_LOG || null,
+    version: packageVersion(),
   };
   saveBridgeState(bridgeState);
   installBridgeStateCleanup(bridgeState);
@@ -297,6 +302,7 @@ async function startBridgeBackground({ announce }) {
     pid: child.pid,
     startedAt: new Date().toISOString(),
     logPath,
+    version: packageVersion(),
   };
   saveBridgeState(state);
 
@@ -326,6 +332,12 @@ function stopBridge() {
     console.error(`could not stop morse bridge: ${err.message}`);
     process.exitCode = 1;
   }
+}
+
+async function restartBridge() {
+  stopBridge();
+  if (process.exitCode) return;
+  await startBridgeBackground({ announce: true });
 }
 
 function loadLiveBridgeState() {
@@ -394,7 +406,11 @@ function showStatus() {
   if (bridge) {
     console.log(`bridge_status: running`);
     console.log(`bridge_pid: ${bridge.pid}`);
+    console.log(`bridge_version: ${bridge.version ?? 'unknown'}`);
     if (bridge.logPath) console.log(`bridge_log: ${bridge.logPath}`);
+    if (bridge.version && bridge.version !== packageVersion()) {
+      console.log(`bridge_warning: running bridge version ${bridge.version} differs from installed ${packageVersion()}; run "morse restart".`);
+    }
   } else {
     console.log(`bridge_status: stopped`);
   }
@@ -423,6 +439,28 @@ function showStatus() {
     console.log(parts.join(' '));
   }
   if (config?.activeWorkspace?.enabledAt) console.log(`enabled_at: ${config.activeWorkspace.enabledAt}`);
+}
+
+function showDoctor() {
+  loadDotEnv(ENV_PATH);
+  console.log(`morse_version: ${packageVersion()}`);
+  console.log(`config: ${globalConfigPath()}`);
+  const config = loadRuntimeConfig(process.env, process.cwd());
+  console.log(`configured: ${config ? 'yes' : 'no'}`);
+  const bridge = loadLiveBridgeState();
+  console.log(`bridge: ${bridge ? `running pid=${bridge.pid} version=${bridge.version ?? 'unknown'}` : 'stopped'}`);
+  if (bridge?.version && bridge.version !== packageVersion()) {
+    console.log(`bridge_action: morse restart`);
+  }
+  const runtimeState = loadLiveRuntimeState();
+  console.log(`runtime_state: ${runtimeState?.appServerUrl ? `active pid=${runtimeState.pid ?? 'none'} thread=${runtimeState.activeThreadId ?? 'none'}` : 'none'}`);
+  const registry = liveSessionRegistry();
+  const sessions = sessionsByRecent(registry);
+  console.log(`sessions: ${sessions.length}`);
+  for (const session of sessions) {
+    console.log(`session ${session.id} pid=${session.pid ?? 'none'} status=${session.status ?? 'unknown'} thread=${session.activeThreadId ?? 'none'} cwd=${session.cwd ?? 'unknown'}`);
+  }
+  console.log('doctor_status: ok');
 }
 
 function maskToken(token) {
@@ -1306,6 +1344,8 @@ function cliHelpText() {
     '  morse setup    one-time Telegram bot/user setup',
     '  morse start    start the Telegram bridge in the background',
     '  morse stop     stop the background Telegram bridge',
+    '  morse restart  restart the background Telegram bridge',
+    '  morse doctor   inspect and clean stale local bridge/session state',
     '  morse enable   set the current directory as the active Codex workspace',
     '  morse codex [codex args]',
     '                 enable this repo and open Codex on the shared remote',
