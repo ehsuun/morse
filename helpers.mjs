@@ -134,6 +134,11 @@ export function codexArgsForRemote(remoteUrl, rawArgs) {
   return ['--remote', remoteUrl, ...args];
 }
 
+export function isTelegramNoopEditError(method, description) {
+  return method.startsWith('editMessage')
+    && /message is not modified/i.test(String(description ?? ''));
+}
+
 function resolveFromPath(bin, env, platform) {
   const pathValue = env.PATH || env.Path || '';
   const pathExts = platform === 'win32'

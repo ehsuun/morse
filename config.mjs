@@ -2,6 +2,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { dirname, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
+export const STATE_SCHEMA_VERSION = 1;
+
 export function globalConfigPath() {
   if (process.env.MORSE_CONFIG) return resolve(process.env.MORSE_CONFIG);
   if (process.env.MORSE_HOME) return resolve(process.env.MORSE_HOME, 'config.json');
@@ -57,15 +59,15 @@ export function saveGlobalConfig(config, path = globalConfigPath()) {
 }
 
 export function saveRuntimeState(state, path = runtimeStatePath()) {
-  return savePrivateJson(state, path);
+  return savePrivateJson(withSchemaVersion(state), path);
 }
 
 export function saveBridgeState(state, path = bridgeStatePath()) {
-  return savePrivateJson(state, path);
+  return savePrivateJson(withSchemaVersion(state), path);
 }
 
 export function saveSessionsState(state, path = sessionsStatePath()) {
-  return savePrivateJson(state, path);
+  return savePrivateJson(withSchemaVersion(state), path);
 }
 
 export function clearRuntimeState(expectedState = null, path = runtimeStatePath()) {
@@ -91,6 +93,13 @@ function savePrivateJson(value, path) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
   return path;
+}
+
+function withSchemaVersion(value) {
+  return {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    ...value,
+  };
 }
 
 function readJson(path) {

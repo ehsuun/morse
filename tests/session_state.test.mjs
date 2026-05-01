@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   activeSessionForChat,
   loadSessionRegistry,
+  pruneDeadSessions,
   pruneSessions,
   removeSession,
   sessionsByRecent,
@@ -83,5 +84,30 @@ test('removeSession and pruneSessions clear chat selections', () => {
 
     removeSession('keep');
     assert.equal(activeSessionForChat(123), null);
+  });
+});
+
+test('pruneDeadSessions removes dead pid sessions and clears active chat selections', () => {
+  withMorseConfigPath(() => {
+    upsertSession({ id: 'alive', pid: 111, updatedAt: '2026-04-27T01:00:00.000Z' });
+    upsertSession({ id: 'dead', pid: 222, updatedAt: '2026-04-27T02:00:00.000Z' });
+    setChatActiveSession(123, 'dead');
+
+    const { registry, removed } = pruneDeadSessions((pid) => pid === 111);
+
+    assert.deepEqual(removed.map((session) => session.id), ['dead']);
+    assert.deepEqual(registry.sessions.map((session) => session.id), ['alive']);
+    assert.equal(activeSessionForChat(123).id, 'alive');
+  });
+});
+
+test('pruneDeadSessions keeps sessions without pids for compatibility', () => {
+  withMorseConfigPath(() => {
+    upsertSession({ id: 'legacy', updatedAt: '2026-04-27T01:00:00.000Z' });
+
+    const { registry, removed } = pruneDeadSessions(() => false);
+
+    assert.deepEqual(removed, []);
+    assert.deepEqual(registry.sessions.map((session) => session.id), ['legacy']);
   });
 });

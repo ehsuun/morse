@@ -34,6 +34,19 @@ Requirements:
 - Codex installed and signed in
 - Telegram
 
+## Upgrade
+
+For global npm installs:
+
+```bash
+morse stop
+npm install -g morse-bridge@latest
+morse start
+morse status
+```
+
+If the bridge is already running after an upgrade, use `morse restart` so the background process picks up the newly installed package. `morse status` reports the running bridge version and warns when it differs from the installed CLI.
+
 ## Use
 
 Set up morse:
@@ -110,6 +123,8 @@ codex --remote ws://127.0.0.1:<port>
 
 The proxy records the thread id used by the Codex terminal. Telegram messages are sent through the proxy so the terminal and Telegram see the same turn. When `morse codex` exits, the session file is removed and the local app-server is stopped.
 
+If a Codex terminal or app-server dies without a clean exit, morse prunes that stale session the next time sessions are read, such as `/sessions`, `morse status`, or the next Telegram turn. Pending approval buttons are process-local; after a bridge restart, old approval buttons expire and the Codex side must ask again.
+
 To switch repos without opening Codex:
 
 ```bash
@@ -155,11 +170,15 @@ Downloaded Telegram media is stored under the local morse config directory, in `
 morse setup              # configure Telegram and first workspace
 morse start              # start the Telegram bridge in the background
 morse stop               # stop the background Telegram bridge
+morse restart            # restart the background Telegram bridge after upgrades
+morse doctor             # inspect and clean stale local bridge/session state
 morse enable             # set current directory as active workspace
 morse codex [codex args] # open Codex on the shared local remote
 morse status             # print config and active workspace
 morse version            # print morse package version
 ```
+
+After upgrading a global install, run `morse restart` so the background bridge uses the newly installed package code. `morse status` warns when the running bridge version differs from the installed CLI version.
 
 ## Versioning
 
@@ -202,5 +221,20 @@ Legacy `.env` config is still read as a fallback.
 
 ```bash
 npm test
+node -e "process.env.MORSE_INTEGRATION='1'; import('./tests/run.mjs')"
+node --check bot.mjs
 node bot.mjs start --foreground
 ```
+
+The integration command runs the fake Telegram HTTP server and fake Codex WebSocket app-server tests. They are opt-in because they spawn a foreground bot process and can be blocked by stricter sandboxes.
+
+For multi-session hardening, use this manual smoke loop:
+
+1. Start `morse codex` in two or more repos.
+2. Send `/sessions` from Telegram and switch between them.
+3. Queue one Telegram message, switch sessions, then queue another.
+4. Trigger an approval in one session, switch to another, then answer the approval.
+5. Kill one Codex terminal or app-server process.
+6. Run `/sessions` and `morse status`; the dead session should disappear or fail clearly, while live sessions continue routing.
+
+Bridge logs include JSON event lines such as `telegram_message`, `run_queued`, `run_started`, `approval_waiting`, `session_selected`, `session_pruned`, and `run_failed` so one Telegram update can be traced through session selection and recovery.

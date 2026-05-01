@@ -23,6 +23,7 @@ import {
   saveGlobalConfig,
   saveRuntimeState,
   sessionsStatePath,
+  STATE_SCHEMA_VERSION,
 } from '../config.mjs';
 
 function withMorseConfigPath(fn) {
@@ -99,9 +100,9 @@ test('saveRuntimeState and clearRuntimeState manage private session state', () =
       pid: 123,
     };
     saveRuntimeState(state);
-    assert.deepEqual(loadRuntimeState(), state);
+    assert.deepEqual(loadRuntimeState(), { schemaVersion: STATE_SCHEMA_VERSION, ...state });
     clearRuntimeState({ ...state, pid: 456 });
-    assert.deepEqual(loadRuntimeState(), state);
+    assert.deepEqual(loadRuntimeState(), { schemaVersion: STATE_SCHEMA_VERSION, ...state });
     clearRuntimeState(state);
     assert.equal(loadRuntimeState(), null);
   });
@@ -115,9 +116,9 @@ test('saveBridgeState and clearBridgeState manage private bridge state', () => {
       logPath: 'bridge.log',
     };
     saveBridgeState(state);
-    assert.deepEqual(loadBridgeState(), state);
+    assert.deepEqual(loadBridgeState(), { schemaVersion: STATE_SCHEMA_VERSION, ...state });
     clearBridgeState({ ...state, pid: 456 });
-    assert.deepEqual(loadBridgeState(), state);
+    assert.deepEqual(loadBridgeState(), { schemaVersion: STATE_SCHEMA_VERSION, ...state });
     clearBridgeState(state);
     assert.equal(loadBridgeState(), null);
   });
@@ -130,7 +131,7 @@ test('saveSessionsState and loadSessionsState round trip session registry', () =
       chats: { 123: { activeSessionId: 'abc12345' } },
     };
     saveSessionsState(state);
-    assert.deepEqual(loadSessionsState(), state);
+    assert.deepEqual(loadSessionsState(), { schemaVersion: STATE_SCHEMA_VERSION, ...state });
   });
 });
 

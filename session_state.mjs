@@ -67,6 +67,17 @@ export function pruneSessions(predicate) {
   return registry;
 }
 
+export function pruneDeadSessions(isProcessAlive) {
+  const registry = loadSessionRegistry();
+  const dead = registry.sessions.filter((session) => session.pid && !isProcessAlive(session.pid));
+  if (!dead.length) return { registry, removed: [] };
+  const deadIds = new Set(dead.map((session) => session.id));
+  return {
+    registry: pruneSessions((session) => !deadIds.has(session.id)),
+    removed: dead,
+  };
+}
+
 export function sessionsByRecent(registry = loadSessionRegistry()) {
   return [...normalizeSessionsState(registry).sessions].sort((a, b) => {
     const aTime = Date.parse(a.activeThreadUpdatedAt ?? a.updatedAt ?? a.startedAt ?? '') || 0;
