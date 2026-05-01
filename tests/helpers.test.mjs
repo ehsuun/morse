@@ -8,6 +8,7 @@ import {
   codexArgsForRemote,
   commandSpawnSpec,
   formatCommandForLog,
+  isTelegramNoopEditError,
   nextBackupPath,
   niceCut,
   parseCommandLine,
@@ -181,4 +182,13 @@ test('codexArgsForRemote preserves explicit commands and prompts', () => {
     '--model',
     'gpt-5.2',
   ]);
+});
+
+test('isTelegramNoopEditError only matches duplicate edit failures', () => {
+  assert.equal(isTelegramNoopEditError(
+    'editMessageText',
+    'Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content and reply markup of the message',
+  ), true);
+  assert.equal(isTelegramNoopEditError('sendMessage', 'Bad Request: message is not modified'), false);
+  assert.equal(isTelegramNoopEditError('editMessageText', 'Bad Request: message to edit not found'), false);
 });

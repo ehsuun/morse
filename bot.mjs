@@ -15,6 +15,7 @@ import {
   argsAfterOptionalSeparator,
   codexArgsForRemote,
   formatCommandForLog,
+  isTelegramNoopEditError,
   resolveExecutable,
   spawnCommand,
   splitTelegramText,
@@ -48,7 +49,7 @@ import {
 import {
   activeSessionForChat,
   loadSessionRegistry,
-  pruneSessions,
+  pruneDeadSessions,
   removeSession,
   sessionsByRecent,
   setChatActiveSession,
@@ -76,6 +77,7 @@ const pendingApprovals = new Map();
 const promptSessions = new Map();
 const queuedRuns = [];
 let queueDraining = false;
+const loggedDeadSessionIds = new Set();
 
 await main();
 
@@ -218,7 +220,7 @@ async function startBot() {
   }
 
   runtime = await ensureConfigured();
-  API = `https://api.telegram.org/bot${runtime.token}`;
+  API = `${telegramApiBaseUrl()}/bot${runtime.token}`;
   const bridgeState = {
     pid: process.pid,
     startedAt: new Date().toISOString(),
@@ -396,7 +398,7 @@ function showStatus() {
   } else {
     console.log(`bridge_status: stopped`);
   }
-  const state = loadRuntimeState();
+  const state = loadLiveRuntimeState();
   if (state?.appServerUrl) {
     console.log('session_status: active');
     console.log(`codex_remote: codex --remote ${state.appServerUrl}`);
@@ -405,6 +407,21 @@ function showStatus() {
   } else {
     console.log('session_status: none');
   }
+  const registry = liveSessionRegistry();
+  const sessions = sessionsByRecent(registry);
+  console.log(`sessions: ${sessions.length}`);
+  for (const session of sessions) {
+    const parts = [
+      `session ${session.id}`,
+      `label=${sessionLabel(session)}`,
+      `status=${session.status ?? 'unknown'}`,
+      `pid=${session.pid ?? 'none'}`,
+      `thread=${session.activeThreadId ?? 'none'}`,
+      `cwd=${session.cwd ?? 'unknown'}`,
+    ];
+    if (session.waitingReason) parts.push(`waiting=${session.waitingReason}`);
+    console.log(parts.join(' '));
+  }
   if (config?.activeWorkspace?.enabledAt) console.log(`enabled_at: ${config.activeWorkspace.enabledAt}`);
 }
 
@@ -412,6 +429,10 @@ function maskToken(token) {
   if (!token) return '(missing)';
   if (token.length <= 12) return '(set)';
   return `${token.slice(0, 8)}...${token.slice(-4)}`;
+}
+
+function telegramApiBaseUrl() {
+  return (process.env.MORSE_TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/+$/, '');
 }
 
 async function handleUpdate(update) {
@@ -435,6 +456,13 @@ async function handleUpdate(update) {
   const attachments = await attachmentsFromTelegramMessage(msg);
   const text = String(msg.text ?? msg.caption ?? '').trim();
   if (!text && !attachments.length) return;
+  logSessionEvent('telegram_message', {
+    chatId,
+    userId,
+    messageId: msg.message_id,
+    text: text ? summarizeText(text) : null,
+    attachments: attachments.length,
+  });
 
   if (!attachments.length && (text === '/start' || text === '/help')) {
     await send(chatId, helpText());
@@ -485,6 +513,13 @@ async function enqueueRun(text, chatId, inputItems = null, sessionId = null) {
   const registry = liveSessionRegistry();
   const session = sessionId ? sessionById(sessionId, registry) : activeSessionForChat(chatId, registry);
   queuedRuns.push({ id: runId, text, inputItems, chatId, sessionId: session?.id ?? null, ackMessageId: ack.message_id });
+  logSessionEvent('run_queued', {
+    runId,
+    chatId,
+    sessionId: session?.id ?? null,
+    queuedAhead: queued ? queuedRuns.length - 1 : 0,
+    text: summarizeText(text),
+  });
   drainQueue().catch((err) => console.error('queue drain error', err));
 }
 
@@ -497,6 +532,12 @@ async function drainQueue() {
       try {
         await runCodexStreaming(run.text, run.chatId, run.ackMessageId, run.id, run.inputItems, run.sessionId);
       } catch (err) {
+        logSessionEvent('run_failed', {
+          runId: run.id,
+          chatId: run.chatId,
+          sessionId: run.sessionId,
+          error: formatRunError(err),
+        });
         console.error(`run ${run.id} failed: ${formatRunError(err)}`);
         await tg('editMessageText', {
           chat_id: run.chatId,
@@ -619,6 +660,13 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
   const targetCwd = state.cwd ?? current.cwd;
   upsertSession({ ...state, status: 'running', waitingReason: null, waitingSince: null });
   const server = await ensureCodexServer(state);
+  logSessionEvent('run_started', {
+    runId,
+    chatId,
+    sessionId: state.id ?? sessionId,
+    threadId: state.activeThreadId,
+    cwd: targetCwd,
+  });
   console.log(`run ${runId}: relaying to thread ${state.activeThreadId} cwd ${targetCwd} via ${state.proxyUrl ?? state.appServerUrl}`);
 
   let currentId = ackMessageId;
@@ -674,6 +722,12 @@ async function runCodexStreaming(prompt, chatId, ackMessageId, runId, inputItems
     if (pending) clearTimeout(pending);
     if (activeRun?.id === runId) activeRun = null;
     upsertSession({ ...state, status: 'idle', waitingReason: null, waitingSince: null });
+    logSessionEvent('run_finished', {
+      runId,
+      chatId,
+      sessionId: state.id ?? sessionId,
+      threadId: state.activeThreadId,
+    });
   }
   await flush();
 
@@ -711,6 +765,13 @@ async function handleCodexRequest(request) {
       waitingReason: 'approval',
       waitingSince: new Date().toISOString(),
     });
+    logSessionEvent('approval_waiting', {
+      chatId,
+      sessionId: session.id,
+      threadId: session.activeThreadId ?? null,
+      method: request.method,
+      switched: Boolean(switched),
+    });
   }
   const approvalId = String(nextApprovalId++);
   const approval = {
@@ -738,6 +799,12 @@ async function waitForActiveCodexThread(chatId, sessionId = null, timeoutMs = 20
     }
     if (state.pid && !isProcessAlive(state.pid)) {
       clearRuntimeState(state);
+      removeSession(state.id);
+      logSessionEvent('session_dead', {
+        sessionId: state.id ?? null,
+        pid: state.pid,
+        reason: 'wait_for_thread',
+      });
       throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
     }
     if (state.activeThreadId) return state;
@@ -748,12 +815,18 @@ async function waitForActiveCodexThread(chatId, sessionId = null, timeoutMs = 20
   }
 }
 
-async function ensureCodexServer(state = loadRuntimeState()) {
+async function ensureCodexServer(state = loadLiveRuntimeState()) {
   if (!state?.appServerUrl || !state?.appServerCommand) {
     throw new Error('no active Codex remote. Run `morse codex` from the repo first and keep it open.');
   }
   if (state.pid && !isProcessAlive(state.pid)) {
     clearRuntimeState(state);
+    removeSession(state.id);
+    logSessionEvent('session_dead', {
+      sessionId: state.id ?? null,
+      pid: state.pid,
+      reason: 'ensure_server',
+    });
     throw new Error('the active Codex remote is no longer running. Run `morse codex` again.');
   }
 
@@ -789,11 +862,35 @@ function isProcessAlive(pid) {
 function activeRuntimeStateForChat(chatId, sessionId = null) {
   const registry = liveSessionRegistry();
   if (sessionId) return sessionById(sessionId, registry);
-  return activeSessionForChat(chatId, registry) ?? loadRuntimeState();
+  return activeSessionForChat(chatId, registry) ?? loadLiveRuntimeState();
 }
 
 function liveSessionRegistry() {
-  return pruneSessions((session) => !session.pid || isProcessAlive(session.pid));
+  const { registry, removed } = pruneDeadSessions(isProcessAlive);
+  for (const session of removed) {
+    if (loggedDeadSessionIds.has(session.id)) continue;
+    loggedDeadSessionIds.add(session.id);
+    logSessionEvent('session_pruned', {
+      sessionId: session.id,
+      pid: session.pid,
+      label: session.label ?? session.workspaceLabel ?? null,
+      cwd: session.cwd ?? null,
+    });
+  }
+  return registry;
+}
+
+function loadLiveRuntimeState() {
+  const state = loadRuntimeState();
+  if (!state?.pid || isProcessAlive(state.pid)) return state;
+  clearRuntimeState(state);
+  removeSession(state.id);
+  logSessionEvent('session_dead', {
+    sessionId: state.id ?? null,
+    pid: state.pid,
+    reason: 'runtime_state',
+  });
+  return null;
 }
 
 function createSessionId() {
@@ -1031,6 +1128,7 @@ async function handleSessionChoiceCallback(query) {
 
   setChatActiveSession(chatId, session.id);
   const nextRegistry = loadSessionRegistry();
+  logSessionEvent('session_selected', { chatId, sessionId: session.id, label: sessionLabel(session) });
   await tg('answerCallbackQuery', { callback_query_id: query.id, text: `Active: ${sessionLabel(session)}` });
   await tg('editMessageText', {
     chat_id: chatId,
@@ -1078,6 +1176,20 @@ function sessionListLabel(session) {
   return sessionLabel(session);
 }
 
+function logSessionEvent(event, details = {}) {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...details,
+  }));
+}
+
+function summarizeText(text, max = 120) {
+  const value = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (value.length <= max) return value;
+  return `${value.slice(0, max - 1)}...`;
+}
+
 function isApprovalRequest(method) {
   return [
     'item/commandExecution/requestApproval',
@@ -1118,7 +1230,10 @@ async function tg(method, body) {
     body: JSON.stringify(body),
   });
   const json = await res.json();
-  if (!json.ok) throw new Error(`telegram ${method}: ${json.description}`);
+  if (!json.ok) {
+    if (isTelegramNoopEditError(method, json.description)) return null;
+    throw new Error(`telegram ${method}: ${json.description}`);
+  }
   return json.result;
 }
 

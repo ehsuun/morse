@@ -117,8 +117,11 @@ export class CodexWebSocketProxy extends EventEmitter {
 
   routeTerminalRequestFromClient(source, parsed) {
     if (!source.isMorseClient()) return false;
-    if (!this.activeConnection || this.activeConnection.closed) return false;
     if (!isTerminalThreadRequest(parsed, this.activeThreadId)) return false;
+    if (!this.activeConnection || this.activeConnection.closed) {
+      source.sendText(jsonRpcError(parsed?.id, -32000, 'active Codex terminal websocket is not connected'));
+      return true;
+    }
 
     const target = this.activeConnection;
     if (!target.backendOpen) {

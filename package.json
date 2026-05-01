@@ -45,6 +45,7 @@
     "status": "node bot.mjs status",
     "setup": "node bot.mjs setup",
     "test": "node tests/run.mjs",
+    "test:integration": "node -e \"process.env.MORSE_INTEGRATION='1'; import('./tests/run.mjs')\"",
     "version:patch": "npm version patch --no-git-tag-version",
     "version:minor": "npm version minor --no-git-tag-version",
     "version:major": "npm version major --no-git-tag-version"

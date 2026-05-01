@@ -6,4 +6,6 @@ import './websocket_proxy.test.mjs';
 import './approvals.test.mjs';
 import './slash_commands.test.mjs';
 import './session_state.test.mjs';
+import './stress_harness.test.mjs';
+import './telegram_codex_integration.test.mjs';
 import './package_info.test.mjs';
