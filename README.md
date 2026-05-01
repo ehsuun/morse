@@ -34,6 +34,19 @@ Requirements:
 - Codex installed and signed in
 - Telegram
 
+## Upgrade
+
+For global npm installs:
+
+```bash
+morse stop
+npm install -g morse-bridge@latest
+morse start
+morse status
+```
+
+If the bridge is already running after an upgrade, use `morse restart` so the background process picks up the newly installed package. `morse status` reports the running bridge version and warns when it differs from the installed CLI.
+
 ## Use
 
 Set up morse:
